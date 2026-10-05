@@ -225,7 +225,7 @@ async def chat_with_advisor(
         "contents": contents
     }
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
     headers = {
         "x-goog-api-key": api_key,
         "Content-Type": "application/json"
