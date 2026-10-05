@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the backend files
 COPY . .
 
-# Expose port 8000 for FastAPI
+# Set default port (Render will override PORT with its assigned port, e.g. 10000)
+ENV PORT=8000
 EXPOSE 8000
 
-# Start the uvicorn server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the uvicorn server with dynamic port support
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -3,12 +3,15 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.config import settings
 
 DATABASE_URL = settings.DATABASE_URL
+# Render and legacy providers provide 'postgres://' URLs which SQLAlchemy 1.4+ rejects
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 connect_args = {}
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):

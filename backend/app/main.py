@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base, SessionLocal
 from app.routers import auth, finance, ocr, advisor, ml, insights
 from app.models.category import Category
 from uuid import uuid4
 
-# Create SQLite database tables on startup if they don't exist
+# Create database tables on startup if they don't exist
 Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
@@ -33,6 +34,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# CORS middleware for mobile and web clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(auth.router)
 app.include_router(finance.router)
 app.include_router(ocr.router)
@@ -46,4 +56,8 @@ def read_root():
         "status": "online",
         "message": "Welcome to AI Financer API. Go to /docs for interactive Swagger API docs."
     }
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
 

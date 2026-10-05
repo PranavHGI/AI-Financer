@@ -7,6 +7,7 @@ import okhttp3.Authenticator
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import okhttp3.Response
 import okhttp3.Route
 import okhttp3.logging.HttpLoggingInterceptor
@@ -14,6 +15,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
 class ApiClient(private val tokenManager: TokenManager) {
+    // When deployed on Render, update this to your Render URL: e.g., "https://aifinancer-backend.onrender.com/"
     private val BASE_URL = "http://10.34.201.140:8085/"
 
     private val authInterceptor = Interceptor { chain ->
@@ -88,6 +90,9 @@ class ApiClient(private val tokenManager: TokenManager) {
     }
 
     private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .addInterceptor(authInterceptor)
         .addInterceptor(loggingInterceptor)
         .authenticator(authenticator)
