@@ -225,7 +225,11 @@ async def chat_with_advisor(
         "contents": contents
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json"
+    }
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
