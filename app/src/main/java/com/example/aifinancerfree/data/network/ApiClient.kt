@@ -16,7 +16,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 
 class ApiClient(private val tokenManager: TokenManager) {
     // When deployed on Render, update this to your Render URL: e.g., "https://aifinancer-backend.onrender.com/"
-    private val BASE_URL = "http://10.34.201.140:8085/"
+    private val BASE_URL = "https://ai-financer-7a0x.onrender.com"
 
     private val authInterceptor = Interceptor { chain ->
         val originalRequest = chain.request()
