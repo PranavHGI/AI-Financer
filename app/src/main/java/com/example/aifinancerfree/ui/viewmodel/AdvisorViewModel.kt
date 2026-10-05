@@ -44,9 +44,25 @@ class AdvisorViewModel(
                 val result = repository.chatWithAdvisor(trimmed, history)
                 _messages.value = _messages.value + ChatMessage(role = "model", content = result.response)
             } catch (e: Exception) {
+                android.util.Log.e("AdvisorViewModel", "Failed to query advisor", e)
+                val errorMsg = when (e) {
+                    is java.net.SocketTimeoutException ->
+                        "The server is taking time to respond (Render free instances take ~50s to wake up from cold sleep). Please tap again to retry."
+                    is retrofit2.HttpException -> {
+                        when (e.code()) {
+                            401 -> "Session expired. Please log out and log in again."
+                            502, 503, 504 -> "AI service is temporarily busy. Please retry in a few moments."
+                            else -> "Server error (${e.code()}). Please try again."
+                        }
+                    }
+                    is java.io.IOException ->
+                        "Could not connect to the AI Advisor server. Please check your internet connection or verify the server status."
+                    else ->
+                        "An error occurred: ${e.localizedMessage ?: "Unknown error"}. Please try again."
+                }
                 _messages.value = _messages.value + ChatMessage(
                     role = "model",
-                    content = "Could not reach the AI Advisor server. Please make sure your server is online and port forwarding is configured."
+                    content = errorMsg
                 )
             } finally {
                 _isSending.value = false

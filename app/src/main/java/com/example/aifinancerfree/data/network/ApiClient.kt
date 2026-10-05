@@ -16,7 +16,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 
 class ApiClient(private val tokenManager: TokenManager) {
     // When deployed on Render, update this to your Render URL: e.g., "https://aifinancer-backend.onrender.com/"
-    private val BASE_URL = "https://ai-financer-7a0x.onrender.com"
+    private val BASE_URL = "https://ai-financer-7a0x.onrender.com/"
 
     private val authInterceptor = Interceptor { chain ->
         val originalRequest = chain.request()
@@ -90,9 +90,9 @@ class ApiClient(private val tokenManager: TokenManager) {
     }
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(90, TimeUnit.SECONDS)
         .addInterceptor(authInterceptor)
         .addInterceptor(loggingInterceptor)
         .authenticator(authenticator)

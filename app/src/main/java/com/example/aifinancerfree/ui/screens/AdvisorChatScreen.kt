@@ -58,7 +58,7 @@ fun AdvisorChatScreen(
                     title = {
                         Column {
                             Text("AI Financial Advisor", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                            Text("Powered by Gemini 1.5 Flash", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Powered by Gemini AI", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
                     navigationIcon = {
