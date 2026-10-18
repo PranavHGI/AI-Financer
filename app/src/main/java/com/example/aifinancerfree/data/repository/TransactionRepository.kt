@@ -27,12 +27,14 @@ import kotlinx.coroutines.sync.withLock
 data class LocalTransaction(
     val id: Long,
     val remoteId: String?,
+    val clientId: String? = null,
     val type: String,
     val amount: Double,
     val category: String,
     val merchant: String,
     val account: String,
     val notes: String?,
+    val source: String = "manual",
     val date: Long,
     val synced: Boolean
 )
@@ -49,7 +51,7 @@ class TransactionRepository(
     private val syncMutex = Mutex()
     companion object {
         private const val TAG = "TransactionRepository"
-        val DEFAULT_CATEGORIES = listOf("Food", "Travel", "Shopping", "Utilities", "Entertainment", "Health", "Others")
+        val DEFAULT_CATEGORIES = listOf("Food & dining", "Travel", "Shopping", "Education", "Bills", "Entertainment", "Health", "Salary", "Freelance", "Transfer", "Other")
     }
 
     suspend fun initializeDefaultBudgets() = withContext(Dispatchers.IO) {
@@ -75,26 +77,32 @@ class TransactionRepository(
         if (cursor.moveToFirst()) {
             val idCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ID)
             val remoteCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_REMOTE_ID)
+            val clientCol = cursor.getColumnIndex(DatabaseHelper.COL_TX_CLIENT_ID)
             val typeCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_TYPE)
             val amountCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_AMOUNT)
             val catCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_CATEGORY)
             val merchCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_MERCHANT)
             val acctCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ACCOUNT)
             val notesCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_NOTES)
+            val sourceCol = cursor.getColumnIndex(DatabaseHelper.COL_TX_SOURCE)
             val dateCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_DATE)
             val syncCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_SYNCED)
 
             do {
+                val clientId = if (clientCol >= 0) cursor.getString(clientCol) else null
+                val source = if (sourceCol >= 0) cursor.getString(sourceCol) ?: "manual" else "manual"
                 list.add(
                     LocalTransaction(
                         id = cursor.getLong(idCol),
                         remoteId = cursor.getString(remoteCol),
+                        clientId = clientId,
                         type = cursor.getString(typeCol),
                         amount = cursor.getDouble(amountCol),
                         category = cursor.getString(catCol),
                         merchant = cursor.getString(merchCol),
                         account = cursor.getString(acctCol),
                         notes = cursor.getString(notesCol),
+                        source = source,
                         date = cursor.getLong(dateCol),
                         synced = cursor.getInt(syncCol) == 1
                     )
@@ -112,16 +120,20 @@ class TransactionRepository(
         merchant: String,
         account: String,
         notes: String?,
-        date: Long
+        date: Long,
+        source: String = "manual"
     ): Long = withContext(Dispatchers.IO) {
         val db = dbHelper.writableDatabase
+        val clientId = java.util.UUID.randomUUID().toString()
         val values = ContentValues().apply {
+            put(DatabaseHelper.COL_TX_CLIENT_ID, clientId)
             put(DatabaseHelper.COL_TX_TYPE, type)
             put(DatabaseHelper.COL_TX_AMOUNT, amount)
             put(DatabaseHelper.COL_TX_CATEGORY, category)
             put(DatabaseHelper.COL_TX_MERCHANT, merchant)
             put(DatabaseHelper.COL_TX_ACCOUNT, account)
             put(DatabaseHelper.COL_TX_NOTES, notes)
+            put(DatabaseHelper.COL_TX_SOURCE, source)
             put(DatabaseHelper.COL_TX_DATE, date)
             put(DatabaseHelper.COL_TX_SYNCED, 0)
         }
@@ -199,8 +211,9 @@ class TransactionRepository(
 
     /**
      * Uploads all unsynced local transaction records to the server database.
+     * Returns Pair(successfullyUploadedCount, totalPendingCount).
      */
-    suspend fun syncPendingTransactions() = withContext(Dispatchers.IO) {
+    suspend fun syncPendingTransactions(): Pair<Int, Int> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val db = dbHelper.writableDatabase
             val cursor = db.rawQuery("SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_SYNCED} = 0", null)
@@ -209,20 +222,31 @@ class TransactionRepository(
             Log.i(TAG, "==================== [PENDING TX SYNC START] ====================")
             Log.i(TAG, "[SYNC PENDING] Found $pendingCount unsynced transaction(s) in local SQLite.")
 
+            var syncSuccessCount = 0
+
             if (cursor.moveToFirst()) {
                 val idCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ID)
+                val clientCol = cursor.getColumnIndex(DatabaseHelper.COL_TX_CLIENT_ID)
                 val typeCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_TYPE)
                 val amountCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_AMOUNT)
                 val catCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_CATEGORY)
                 val merchCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_MERCHANT)
                 val acctCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ACCOUNT)
                 val notesCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_NOTES)
+                val sourceCol = cursor.getColumnIndex(DatabaseHelper.COL_TX_SOURCE)
                 val dateCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_DATE)
-
-                var syncSuccessCount = 0
 
                 do {
                     val localId = cursor.getLong(idCol)
+                    var clientId = if (clientCol >= 0) cursor.getString(clientCol) else null
+                    if (clientId.isNullOrEmpty()) {
+                        clientId = java.util.UUID.randomUUID().toString()
+                        val updateClientId = ContentValues().apply {
+                            put(DatabaseHelper.COL_TX_CLIENT_ID, clientId)
+                        }
+                        db.update(DatabaseHelper.TABLE_TRANSACTIONS, updateClientId, "${DatabaseHelper.COL_TX_ID} = ?", arrayOf(localId.toString()))
+                    }
+
                     val type = cursor.getString(typeCol)
                     val amount = cursor.getDouble(amountCol)
                     val category = cursor.getString(catCol)
@@ -230,10 +254,17 @@ class TransactionRepository(
                     val account = cursor.getString(acctCol)
                     val notes = cursor.getString(notesCol)
                     val date = cursor.getLong(dateCol)
-                    val source = if (notes?.contains("Parsed") == true) "sms" else "manual"
+                    val source = if (sourceCol >= 0 && cursor.getString(sourceCol) != null) {
+                        cursor.getString(sourceCol)
+                    } else if (notes?.contains("Parsed") == true) {
+                        "sms"
+                    } else {
+                        "manual"
+                    }
 
                     val formattedAmount = "₹${amount}"
                     val request = TransactionRequest(
+                        clientId = clientId,
                         type = type,
                         amount = formattedAmount,
                         category = category,
@@ -246,27 +277,13 @@ class TransactionRepository(
 
                     Log.i(
                         TAG,
-                        "--> [CLIENT SENDING TX TO SERVER] local_id=$localId | " +
+                        "--> [CLIENT SENDING TX TO SERVER] local_id=$localId | clientId=$clientId | " +
                         "Payload: type='$type', amount='$formattedAmount', category='$category', merchant='$merchant', " +
                         "source='$source', timestamp=${date / 1000.0}, account='$account'"
                     )
 
                     try {
                         val response = apiService.createTransaction(request)
-
-                        // Comparative Verification
-                        val amountMatched = response.amount.contains(amount.toString()) || response.amount == formattedAmount
-                        val merchantMatched = response.merchant.equals(merchant, ignoreCase = true)
-                        val typeMatched = response.type.equals(type, ignoreCase = true)
-
-                        Log.i(
-                            TAG,
-                            "<-- [CLIENT RECEIVED RESPONSE FROM SERVER] local_id=$localId -> remote_id=${response.id}\n" +
-                            "    Returned Amount: '${response.amount}' (Match: $amountMatched)\n" +
-                            "    Returned Merchant: '${response.merchant}' (Match: $merchantMatched)\n" +
-                            "    Returned Type: '${response.type}' (Match: $typeMatched)\n" +
-                            "    Returned Confidence: ${response.confidence}"
-                        )
 
                         val updateValues = ContentValues().apply {
                             put(DatabaseHelper.COL_TX_REMOTE_ID, response.id)
@@ -282,10 +299,17 @@ class TransactionRepository(
                             "Error Body: $errorBody",
                             e
                         )
-                        break // Stop sync loop if we hit a server error
+                        if (e.code() == 401) {
+                            // Auth token invalid/expired, abort remaining batch
+                            break
+                        } else {
+                            // Non-401 4xx: client error with this specific transaction, skip and continue batch
+                            continue
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "[NETWORK SYNC ERROR] local_id=$localId failed: ${e.localizedMessage}", e)
-                        break // Stop sync loop if we hit a network issue
+                        // Network error / server down, abort batch
+                        break
                     }
                 } while (cursor.moveToNext())
 
@@ -297,6 +321,7 @@ class TransactionRepository(
                 )
             }
             cursor.close()
+            return@withLock Pair(syncSuccessCount, pendingCount)
         }
     }
 
@@ -313,14 +338,23 @@ class TransactionRepository(
 
             var newCachedCount = 0
             for (tx in remoteTxs) {
-                // Check if this remote transaction is already cached
-                val cursor = db.rawQuery("SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ?", arrayOf(tx.id))
+                // Check if this remote transaction is already cached by remote_id or client_id
+                val query = if (!tx.clientId.isNullOrEmpty()) {
+                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ? OR ${DatabaseHelper.COL_TX_CLIENT_ID} = ?"
+                } else {
+                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ?"
+                }
+                val args = if (!tx.clientId.isNullOrEmpty()) arrayOf(tx.id, tx.clientId) else arrayOf(tx.id)
+                val cursor = db.rawQuery(query, args)
                 val alreadyExists = cursor.count > 0
                 cursor.close()
 
                 if (!alreadyExists) {
                     val values = ContentValues().apply {
                         put(DatabaseHelper.COL_TX_REMOTE_ID, tx.id)
+                        if (!tx.clientId.isNullOrEmpty()) {
+                            put(DatabaseHelper.COL_TX_CLIENT_ID, tx.clientId)
+                        }
                         put(DatabaseHelper.COL_TX_TYPE, tx.type)
                         
                         val cleanedAmount = tx.amount.replace("₹", "").replace("+", "").replace("-", "").replace(",", "").trim()
@@ -331,6 +365,7 @@ class TransactionRepository(
                         put(DatabaseHelper.COL_TX_MERCHANT, tx.merchant)
                         put(DatabaseHelper.COL_TX_ACCOUNT, if (tx.maskedAccountRef.isEmpty()) "Main Account" else tx.maskedAccountRef)
                         put(DatabaseHelper.COL_TX_NOTES, tx.description)
+                        put(DatabaseHelper.COL_TX_SOURCE, tx.source)
                         put(DatabaseHelper.COL_TX_DATE, (tx.timestamp * 1000).toLong())
                         put(DatabaseHelper.COL_TX_SYNCED, 1)
                     }

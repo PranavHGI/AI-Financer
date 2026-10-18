@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
 class TransactionBase(BaseModel):
+    client_id: str | None = None
     type: str # "income" or "expense"
     amount: str
     category: str

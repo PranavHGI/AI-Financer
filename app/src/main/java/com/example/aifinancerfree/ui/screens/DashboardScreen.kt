@@ -77,14 +77,21 @@ fun DashboardScreen(
     val progress = (totalSpent / totalLimit).toFloat()
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        Log.i(TAG_DASHBOARD, "[SMS PERMISSION RESULT] READ_SMS isGranted=$isGranted")
-        if (isGranted) {
-            Log.i(TAG_DASHBOARD, "[SMS PERMISSION GRANTED] Launching scanSmsInbox...")
-            viewModel.scanSmsInbox(context) { count ->
-                Log.i(TAG_DASHBOARD, "[SMS SCAN COMPLETE] Finished inbox scan. Total new transactions: $count")
-                Toast.makeText(context, "Scan complete! Imported $count transactions.", Toast.LENGTH_LONG).show()
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val readGranted = perms[Manifest.permission.READ_SMS] == true
+        val app = context.applicationContext as? com.example.aifinancerfree.AIFinancerApplication ?: com.example.aifinancerfree.AIFinancerApplication.instance
+        app.smsAccessManager.refresh()
+
+        if (readGranted) {
+            if (app.smsAccessManager.isConsentGranted()) {
+                viewModel.scanSmsInbox(context) { result ->
+                    val msg = "Scan complete! Examined: ${result.examined} · Already imported: ${result.alreadyImported} · New: ${result.imported} · Uploaded: ${result.uploaded}"
+                    Log.i(TAG_DASHBOARD, msg)
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Toast.makeText(context, "Please enable SMS tracking consent in Profile -> SMS Ingestion & Privacy first.", Toast.LENGTH_LONG).show()
             }
         } else {
             Log.w(TAG_DASHBOARD, "[SMS PERMISSION DENIED] User denied READ_SMS permission")
@@ -149,30 +156,27 @@ fun DashboardScreen(
         item {
             Card(
                 onClick = {
-                    val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
-                    val isDefault = currentDefault == context.packageName
-                    val hasReadPermission = ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.READ_SMS
-                    ) == PackageManager.PERMISSION_GRANTED
+                    val app = context.applicationContext as? com.example.aifinancerfree.AIFinancerApplication ?: com.example.aifinancerfree.AIFinancerApplication.instance
+                    val accessManager = app.smsAccessManager
 
-                    Log.i(
-                        TAG_DASHBOARD,
-                        "==================== [SCAN SMS BUTTON CLICKED] ====================\n" +
-                        "Is Default SMS App: $isDefault (Current Default: '$currentDefault')\n" +
-                        "READ_SMS Permission Granted: $hasReadPermission\n" +
-                        "==================================================================="
-                    )
+                    if (!accessManager.isConsentGranted()) {
+                        Toast.makeText(context, "SMS tracking consent is disabled. Enable it in Profile -> SMS Ingestion & Privacy.", Toast.LENGTH_LONG).show()
+                        return@Card
+                    }
 
-                    if (hasReadPermission) {
-                        Log.i(TAG_DASHBOARD, "[SMS SCAN] Initiating scanSmsInbox with existing READ_SMS permission...")
-                        viewModel.scanSmsInbox(context) { count ->
-                            Log.i(TAG_DASHBOARD, "[SMS SCAN RESULT] Callback completed with $count transactions imported.")
-                            Toast.makeText(context, "Scan complete! Imported $count transactions.", Toast.LENGTH_LONG).show()
+                    if (accessManager.hasReadSmsPermission()) {
+                        viewModel.scanSmsInbox(context) { result ->
+                            val msg = "Scan complete! Examined: ${result.examined} · Already imported: ${result.alreadyImported} · New: ${result.imported} · Uploaded: ${result.uploaded}"
+                            Log.i(TAG_DASHBOARD, msg)
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                         }
                     } else {
-                        Log.i(TAG_DASHBOARD, "[SMS SCAN] Requesting READ_SMS permission via system dialog...")
-                        permissionLauncher.launch(Manifest.permission.READ_SMS)
+                        permissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.READ_SMS,
+                                Manifest.permission.RECEIVE_SMS
+                            )
+                        )
                     }
                 },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),

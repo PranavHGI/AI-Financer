@@ -89,4 +89,7 @@ interface ApiService {
 
     @GET("insights/summary")
     suspend fun getInsights(): InsightResponse
+
+    @GET("health")
+    suspend fun healthCheck(): Map<String, String>
 }

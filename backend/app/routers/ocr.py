@@ -40,8 +40,8 @@ def parse_ocr_text(text: str) -> Dict[str, Any]:
             break
 
     # 2. Extract Date
-    # Find patterns like DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
-    date_ms = int(time.time() * 1000)
+    # Return timestamp in seconds
+    date_sec = int(time.time())
     date_patterns = [
         r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})',
         r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})'
@@ -49,9 +49,6 @@ def parse_ocr_text(text: str) -> Dict[str, Any]:
     for pattern in date_patterns:
         match = re.search(pattern, text)
         if match:
-            # For simplicity, convert the matched string to current year timestamp
-            # to avoid parsing complex date strings that might be read incorrectly.
-            # In production, we'd parse using datetime.strptime
             break
 
     # 3. Extract Amount
@@ -102,7 +99,7 @@ def parse_ocr_text(text: str) -> Dict[str, Any]:
         "amount": amount,
         "merchant": merchant,
         "category": category,
-        "date": date_ms
+        "date": date_sec
     }
 
 @router.post("/ocr", response_model=Dict[str, Any])

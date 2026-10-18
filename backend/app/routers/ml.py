@@ -75,9 +75,9 @@ def trigger_retrain(
     db: Session = Depends(get_db)
 ):
     # Gather dataset to train the classifier
-    # We query all transactions to build the baseline model
-    transactions = db.query(Transaction).all()
-    feedbacks = db.query(CategorizationFeedback).all()
+    # We query transactions and feedbacks for current user to build the personalized model
+    transactions = db.query(Transaction).filter(Transaction.user_id == current_user.id).all()
+    feedbacks = db.query(CategorizationFeedback).filter(CategorizationFeedback.user_id == current_user.id).all()
 
     # Create mapping of merchant -> category, where feedbacks take precedence
     data_map = {}

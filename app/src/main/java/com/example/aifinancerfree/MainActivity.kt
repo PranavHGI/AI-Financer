@@ -29,28 +29,19 @@ import com.example.aifinancerfree.ui.viewmodel.GoalsViewModel
 import com.example.aifinancerfree.ui.viewmodel.ViewModelFactory
 
 class MainActivity : ComponentActivity() {
-    private lateinit var tokenManager: TokenManager
-    private lateinit var authRepository: AuthRepository
-    private lateinit var consentPreferences: ConsentPreferences
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        tokenManager = TokenManager(applicationContext)
-        val apiClient = ApiClient(tokenManager)
-        authRepository = AuthRepository(apiClient.apiService, tokenManager)
-        consentPreferences = ConsentPreferences(applicationContext)
-        val dbHelper = DatabaseHelper(applicationContext)
-        val transactionRepository = TransactionRepository(apiClient.apiService, dbHelper)
+        val app = application as? AIFinancerApplication ?: AIFinancerApplication.instance
 
         enableEdgeToEdge()
         setContent {
             AIFinancerApp(
-                tokenManager = tokenManager,
-                authRepository = authRepository,
-                consentPreferences = consentPreferences,
-                transactionRepository = transactionRepository,
-                databaseHelper = dbHelper
+                tokenManager = app.tokenManager,
+                authRepository = app.authRepository,
+                consentPreferences = app.consentPreferences,
+                transactionRepository = app.transactionRepository,
+                databaseHelper = app.databaseHelper
             )
         }
     }

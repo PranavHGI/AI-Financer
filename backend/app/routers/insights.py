@@ -48,6 +48,16 @@ def parse_amount(amt_str: str) -> float:
     except:
         return 0.0
 
+def safe_datetime(timestamp: float) -> datetime:
+    ts = timestamp / 1000.0 if timestamp > 1e11 else timestamp
+    try:
+        return datetime.utcfromtimestamp(ts)
+    except (ValueError, OSError):
+        return datetime.utcnow()
+
+def normalize_seconds(timestamp: float) -> float:
+    return timestamp / 1000.0 if timestamp > 1e11 else timestamp
+
 @router.get("/summary", response_model=InsightsResponse)
 def get_insights(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -83,8 +93,8 @@ def get_insights(
     monthly_totals_map = defaultdict(float)
 
     for tx in txs:
-        if tx.type == "expense":
-            tx_date = datetime.utcfromtimestamp(tx.timestamp)
+        if tx.type == "expense" and tx.category != "Transfer":
+            tx_date = safe_datetime(tx.timestamp)
             month_key = f"{tx_date.year}-{tx_date.month:02d}"
             amt = parse_amount(tx.amount)
             monthly_totals_map[month_key] += amt
@@ -123,11 +133,11 @@ def get_insights(
             grouped_by_amount[(tx.merchant.lower(), amt)].append(tx)
             
     for (merch, amt), group in grouped_by_amount.items():
-        # Sort by timestamp
-        group.sort(key=lambda t: t.timestamp)
+        # Sort by normalized timestamp
+        group.sort(key=lambda t: normalize_seconds(t.timestamp))
         dup_count = 0
         for i in range(len(group) - 1):
-            time_diff = group[i+1].timestamp - group[i].timestamp
+            time_diff = normalize_seconds(group[i+1].timestamp) - normalize_seconds(group[i].timestamp)
             if time_diff <= 600: # 10 minutes
                 dup_count += 1
         if dup_count > 0:
@@ -139,10 +149,10 @@ def get_insights(
     recurring_bills = []
     for (merch, amt), group in grouped_by_amount.items():
         if len(group) >= 3: # Need at least 3 occurrences to verify recurring nature
-            group.sort(key=lambda t: t.timestamp)
+            group.sort(key=lambda t: normalize_seconds(t.timestamp))
             consecutive_diffs = []
             for i in range(len(group) - 1):
-                days_diff = (group[i+1].timestamp - group[i].timestamp) / 86400.0 # convert to days
+                days_diff = (normalize_seconds(group[i+1].timestamp) - normalize_seconds(group[i].timestamp)) / 86400.0 # convert to days
                 consecutive_diffs.append(days_diff)
                 
             # If average spacing is between 25 and 35 days, mark as recurring

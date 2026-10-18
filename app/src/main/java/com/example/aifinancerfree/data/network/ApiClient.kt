@@ -29,6 +29,21 @@ class ApiClient(private val tokenManager: TokenManager) {
         chain.proceed(requestBuilder.build())
     }
 
+    private val refreshHttpClient = OkHttpClient.Builder()
+        .connectTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(90, TimeUnit.SECONDS)
+        .build()
+
+    private val refreshService: ApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl(BASE_URL)
+            .client(refreshHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(ApiService::class.java)
+    }
+
     private val authenticator = object : Authenticator {
         override fun authenticate(route: Route?, response: Response): Request? {
             if (responseCount(response) >= 2) {
@@ -45,20 +60,19 @@ class ApiClient(private val tokenManager: TokenManager) {
 
                 if (!isTokenRefreshed) {
                     try {
-                        val rawRetrofit = Retrofit.Builder()
-                            .baseUrl(BASE_URL)
-                            .addConverterFactory(GsonConverterFactory.create())
-                            .build()
-                        val service = rawRetrofit.create(ApiService::class.java)
-                        
                         val refreshResponse = runBlocking {
-                            service.refresh(RefreshRequest(refreshToken))
+                            refreshService.refresh(RefreshRequest(refreshToken))
                         }
                         
                         tokenManager.saveTokens(refreshResponse.accessToken, refreshResponse.refreshToken)
                         isTokenRefreshed = true
+                    } catch (e: retrofit2.HttpException) {
+                        if (e.code() == 401 || e.code() == 403) {
+                            tokenManager.clearTokens()
+                        }
+                        isTokenRefreshed = false
                     } catch (e: Exception) {
-                        tokenManager.clearTokens()
+                        // Network timeout, server spin-up or transient error: do NOT wipe tokens
                         isTokenRefreshed = false
                     }
                 }
@@ -87,6 +101,7 @@ class ApiClient(private val tokenManager: TokenManager) {
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY
+        redactHeader("Authorization")
     }
 
     private val okHttpClient = OkHttpClient.Builder()

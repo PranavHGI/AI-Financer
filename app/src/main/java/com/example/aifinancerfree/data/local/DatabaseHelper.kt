@@ -8,7 +8,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aifinancer_local.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
 
         // Table Names
         const val TABLE_TRANSACTIONS = "transactions"
@@ -18,12 +18,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         // Transactions Columns
         const val COL_TX_ID = "id"
         const val COL_TX_REMOTE_ID = "remote_id"
+        const val COL_TX_CLIENT_ID = "client_id"
         const val COL_TX_TYPE = "type"
         const val COL_TX_AMOUNT = "amount"
         const val COL_TX_CATEGORY = "category"
         const val COL_TX_MERCHANT = "merchant"
         const val COL_TX_ACCOUNT = "account"
         const val COL_TX_NOTES = "notes"
+        const val COL_TX_SOURCE = "source"
         const val COL_TX_DATE = "date"
         const val COL_TX_SYNCED = "synced"
 
@@ -33,6 +35,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
         // Parsed SMS Columns
         const val COL_SMS_FINGERPRINT = "fingerprint"
+        const val COL_SMS_BODY_HASH = "body_hash"
         const val COL_SMS_TIMESTAMP = "timestamp"
     }
 
@@ -41,12 +44,14 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             CREATE TABLE $TABLE_TRANSACTIONS (
                 $COL_TX_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COL_TX_REMOTE_ID TEXT,
+                $COL_TX_CLIENT_ID TEXT,
                 $COL_TX_TYPE TEXT NOT NULL,
                 $COL_TX_AMOUNT REAL NOT NULL,
                 $COL_TX_CATEGORY TEXT NOT NULL,
                 $COL_TX_MERCHANT TEXT NOT NULL,
                 $COL_TX_ACCOUNT TEXT NOT NULL,
                 $COL_TX_NOTES TEXT,
+                $COL_TX_SOURCE TEXT DEFAULT 'manual',
                 $COL_TX_DATE INTEGER NOT NULL,
                 $COL_TX_SYNCED INTEGER DEFAULT 0
             )
@@ -62,6 +67,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val createSmsTable = """
             CREATE TABLE $TABLE_PARSED_SMS (
                 $COL_SMS_FINGERPRINT TEXT PRIMARY KEY,
+                $COL_SMS_BODY_HASH TEXT,
                 $COL_SMS_TIMESTAMP INTEGER NOT NULL
             )
         """.trimIndent()
@@ -72,9 +78,22 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_TRANSACTIONS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_BUDGETS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_PARSED_SMS")
-        onCreate(db)
+        if (oldVersion < 3) {
+            // Non-destructive migration to version 3
+            try {
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN $COL_TX_CLIENT_ID TEXT")
+            } catch (_: Exception) {}
+            try {
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN $COL_TX_SOURCE TEXT DEFAULT 'manual'")
+            } catch (_: Exception) {}
+            try {
+                db.execSQL("ALTER TABLE $TABLE_PARSED_SMS ADD COLUMN $COL_SMS_BODY_HASH TEXT")
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun resetParsedSmsHistory() {
+        val db = writableDatabase
+        db.delete(TABLE_PARSED_SMS, null, null)
     }
 }

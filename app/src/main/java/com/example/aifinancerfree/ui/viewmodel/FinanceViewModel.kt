@@ -176,26 +176,23 @@ class FinanceViewModel(
         }
     }
 
-    fun scanSmsInbox(context: Context, onSyncComplete: (Int) -> Unit) {
+    fun scanSmsInbox(context: Context, onSyncComplete: (com.example.aifinancerfree.data.sms.ScanResult) -> Unit) {
         viewModelScope.launch {
             _isSyncing.value = true
             Log.i("FinanceViewModel", "[scanSmsInbox] Triggered SMS inbox scan...")
             try {
                 val syncManager = SmsSyncManager(context, dbHelper)
-                val newCount = syncManager.syncInbox()
-                Log.i("FinanceViewModel", "[scanSmsInbox] syncInbox returned $newCount new transactions.")
-                
-                if (newCount > 0) {
-                    Log.i("FinanceViewModel", "[scanSmsInbox] Uploading new transactions to backend server...")
-                    repository.syncPendingTransactions()
-                    loadData()
-                } else {
-                    Log.i("FinanceViewModel", "[scanSmsInbox] No new transactions found. Skipping remote upload.")
-                }
-                onSyncComplete(newCount)
+                val scanResult = syncManager.syncInbox()
+                Log.i("FinanceViewModel", "[scanSmsInbox] syncInbox completed: $scanResult")
+
+                // Always attempt sync of pending transactions to upload new rows and retry previous unsynced rows
+                val (uploaded, _) = repository.syncPendingTransactions()
+                scanResult.uploaded = uploaded
+                loadData()
+                onSyncComplete(scanResult)
             } catch (e: Exception) {
                 Log.e("FinanceViewModel", "[scanSmsInbox] Exception occurred during SMS scan", e)
-                onSyncComplete(0)
+                onSyncComplete(com.example.aifinancerfree.data.sms.ScanResult(0, 0, 0, 0, 0, 0))
             } finally {
                 _isSyncing.value = false
             }

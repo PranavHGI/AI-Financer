@@ -3,6 +3,7 @@ package com.example.aifinancerfree.data.model
 import com.google.gson.annotations.SerializedName
 
 data class TransactionRequest(
+    @SerializedName("client_id") val clientId: String? = null,
     @SerializedName("type") val type: String,
     @SerializedName("amount") val amount: String,
     @SerializedName("category") val category: String,
@@ -15,6 +16,7 @@ data class TransactionRequest(
 
 data class TransactionResponse(
     @SerializedName("id") val id: String,
+    @SerializedName("client_id") val clientId: String? = null,
     @SerializedName("user_id") val userId: String,
     @SerializedName("type") val type: String,
     @SerializedName("amount") val amount: String,

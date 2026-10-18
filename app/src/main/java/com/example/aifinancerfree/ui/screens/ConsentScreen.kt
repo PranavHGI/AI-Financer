@@ -1,10 +1,9 @@
 package com.example.aifinancerfree.ui.screens
 
-import android.app.role.RoleManager
-import android.content.Context
+import android.Manifest
 import android.content.Intent
-import android.os.Build
-import android.provider.Telephony
+import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,7 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
@@ -21,14 +20,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.example.aifinancerfree.AIFinancerApplication
 import com.example.aifinancerfree.data.local.ConsentPreferences
-
-import android.app.Activity
-import android.util.Log
-
-private const val TAG = "ConsentScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,35 +35,55 @@ fun ConsentScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var isTrackingEnabled by remember { mutableStateOf(prefs.isSmsTrackingEnabled()) }
-    var isDefaultSmsApp by remember { mutableStateOf(checkDefaultSmsStatus(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    val roleLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val resultCode = result.resultCode
-        val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
-        val isDefault = checkDefaultSmsStatus(context)
-        isDefaultSmsApp = isDefault
+    val app = context.applicationContext as? AIFinancerApplication ?: AIFinancerApplication.instance
+    val accessManager = app.smsAccessManager
+    val dbHelper = app.databaseHelper
 
-        Log.i(
-            TAG,
-            "==================== [DEFAULT SMS ROLE RESULT] ====================\n" +
-            "Result Code: $resultCode (RESULT_OK = ${Activity.RESULT_OK}, RESULT_CANCELED = ${Activity.RESULT_CANCELED})\n" +
-            "Current Default SMS Package: '$currentDefault'\n" +
-            "AI Financer Package: '${context.packageName}'\n" +
-            "Is AI Financer Now Default: $isDefault\n" +
-            "==================================================================="
-        )
+    val isAccessEnabled by accessManager.isAccessEnabled.collectAsState()
+    var isConsentGranted by remember { mutableStateOf(accessManager.isConsentGranted()) }
+    var hasPermissions by remember { mutableStateOf(accessManager.hasAllRequiredPermissions()) }
 
-        if (isDefault) {
-            prefs.setSmsTrackingEnabled(true)
-            isTrackingEnabled = true
-            Toast.makeText(context, "AI Financer is now set as default SMS app!", Toast.LENGTH_SHORT).show()
+    var showRevokeDialog by remember { mutableStateOf(false) }
+    var showResetConsentDialog by remember { mutableStateOf(false) }
+    var showResetHistoryDialog by remember { mutableStateOf(false) }
+
+    fun refreshStates() {
+        accessManager.refresh()
+        isConsentGranted = accessManager.isConsentGranted()
+        hasPermissions = accessManager.hasAllRequiredPermissions()
+    }
+
+    // Refresh when returning from system settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshStates()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val readGranted = perms[Manifest.permission.READ_SMS] == true
+        val receiveGranted = perms[Manifest.permission.RECEIVE_SMS] == true
+
+        if (readGranted && receiveGranted) {
+            accessManager.setConsentEnabled(true)
+            refreshStates()
+            Toast.makeText(context, "SMS ingestion enabled successfully!", Toast.LENGTH_SHORT).show()
         } else {
+            accessManager.setConsentEnabled(false)
+            refreshStates()
             Toast.makeText(
                 context,
-                "Default SMS app was not changed (Status: $resultCode). Current default: $currentDefault",
+                "Both READ_SMS and RECEIVE_SMS permissions are required for ingestion.",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -77,7 +95,7 @@ fun ConsentScreen(
                 title = { Text("SMS Ingestion & Privacy") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
@@ -90,11 +108,11 @@ fun ConsentScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Role status card
+            // Status Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isDefaultSmsApp) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = if (isAccessEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
                 Row(
@@ -105,16 +123,20 @@ fun ConsentScreen(
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = if (isDefaultSmsApp) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = if (isAccessEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isDefaultSmsApp) "Default SMS Handler Active" else "Default SMS Handler Inactive",
+                            text = if (isAccessEnabled) "SMS Tracking Active" else "SMS Tracking Inactive",
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = if (isDefaultSmsApp) "AI Financer is configured to intercept transactions." else "Default role is required to parse messages.",
+                            text = if (isAccessEnabled) {
+                                "Ingestion is authorized to detect transactions locally."
+                            } else {
+                                "Turn on the toggle below to enable local transaction parsing."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -139,9 +161,9 @@ fun ConsentScreen(
                         Text("Privacy Assurances", fontWeight = FontWeight.Bold)
                     }
                     Text(
-                        text = "• Raw SMS message texts are parsed locally on your phone and are NEVER uploaded to any servers or stored in any database.\n\n" +
+                        text = "• Raw SMS texts are parsed locally on your device and are NEVER uploaded to any servers or stored in any database.\n\n" +
                                "• Only structured transaction details (amount, category, merchant, timestamp) are extracted and saved.\n\n" +
-                               "• You can turn off extraction at any time, which will immediately stop processing incoming messages.",
+                               "• You can pause or revoke ingestion at any time, which immediately stops reading incoming messages.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -168,20 +190,22 @@ fun ConsentScreen(
                     )
                 }
                 Switch(
-                    checked = isTrackingEnabled && isDefaultSmsApp,
+                    checked = isAccessEnabled,
                     onCheckedChange = { checked ->
                         if (checked) {
-                            if (!isDefaultSmsApp) {
-                                requestDefaultSmsRole(context) { intent ->
-                                    roleLauncher.launch(intent)
-                                }
+                            if (!accessManager.hasAllRequiredPermissions()) {
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.READ_SMS,
+                                        Manifest.permission.RECEIVE_SMS
+                                    )
+                                )
                             } else {
-                                prefs.setSmsTrackingEnabled(true)
-                                isTrackingEnabled = true
+                                accessManager.setConsentEnabled(true)
+                                refreshStates()
                             }
                         } else {
-                            prefs.setSmsTrackingEnabled(false)
-                            isTrackingEnabled = false
+                            showRevokeDialog = true
                         }
                     }
                 )
@@ -189,26 +213,17 @@ fun ConsentScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // Action Buttons
-            if (!isDefaultSmsApp) {
-                Button(
-                    onClick = {
-                        requestDefaultSmsRole(context) { intent ->
-                            roleLauncher.launch(intent)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Set as Default SMS App")
-                }
+            // Reset Import History Button
+            Button(
+                onClick = { showResetHistoryDialog = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Reset Import History")
             }
 
+            // Clear Consent Settings Button
             OutlinedButton(
-                onClick = {
-                    prefs.clearConsent()
-                    isTrackingEnabled = false
-                    Toast.makeText(context, "All tracking consent configurations and local markers deleted.", Toast.LENGTH_LONG).show()
-                },
+                onClick = { showResetConsentDialog = true },
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -216,58 +231,94 @@ fun ConsentScreen(
             }
         }
     }
-}
 
-private fun checkDefaultSmsStatus(context: Context): Boolean {
-    val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
-    val isDefault = currentDefault == context.packageName
-    Log.d(TAG, "[DEFAULT SMS AUDIT] App pkg: '${context.packageName}' | System default pkg: '$currentDefault' | IsDefault: $isDefault")
-    return isDefault
-}
-
-private fun requestDefaultSmsRole(context: Context, launch: (Intent) -> Unit) {
-    Log.i(TAG, "[SET DEFAULT SMS CLICKED] Android SDK: ${Build.VERSION.SDK_INT}, Package: '${context.packageName}'")
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val roleManager = context.getSystemService(Context.ROLE_SERVICE) as? RoleManager
-        if (roleManager != null) {
-            val isAvailable = roleManager.isRoleAvailable(RoleManager.ROLE_SMS)
-            val isHeld = roleManager.isRoleHeld(RoleManager.ROLE_SMS)
-            Log.i(TAG, "[ROLE_SMS CHECK] isRoleAvailable: $isAvailable, isRoleHeld: $isHeld")
-
-            if (isAvailable) {
-                if (isHeld) {
-                    Log.i(TAG, "[ROLE_SMS CHECK] Role already held by this app.")
-                    Toast.makeText(context, "AI Financer is already the default SMS app.", Toast.LENGTH_SHORT).show()
-                } else {
-                    Log.i(TAG, "[ROLE_SMS REQUEST] Launching system RoleManager.ROLE_SMS prompt dialog")
-                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
-                    launch(intent)
-                }
-            } else {
-                Log.w(TAG, "[ROLE_SMS WARNING] RoleManager.ROLE_SMS is NOT available on this device/ROM. Falling back to Intent.")
-                try {
-                    val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
-                        putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
+    // Revoke Explanation Dialog
+    if (showRevokeDialog) {
+        AlertDialog(
+            onDismissRequest = { showRevokeDialog = false },
+            title = { Text("Disable SMS Tracking") },
+            text = {
+                Text("SMS transaction parsing will be paused immediately. To fully revoke Android system permissions, you can open App Settings.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        accessManager.setConsentEnabled(false)
+                        refreshStates()
+                        showRevokeDialog = false
                     }
-                    launch(intent)
-                } catch (e: Exception) {
-                    Log.e(TAG, "[ROLE_SMS FALLBACK FAILED] Direct intent failed. Opening default apps settings screen.", e)
-                    val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
-                    context.startActivity(settingsIntent)
+                ) {
+                    Text("Turn Off")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                        showRevokeDialog = false
+                    }
+                ) {
+                    Text("App Settings")
                 }
             }
-        } else {
-            Log.w(TAG, "[ROLE_SMS WARNING] RoleManager service is null. Falling back to ACTION_CHANGE_DEFAULT.")
-            val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
-                putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
+        )
+    }
+
+    // Confirmation: Reset Consent Settings
+    if (showResetConsentDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConsentDialog = false },
+            title = { Text("Reset Consent Settings?") },
+            text = {
+                Text("This will clear your tracking consent preference. SMS processing will stop until you enable it again.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        accessManager.clearConsent()
+                        refreshStates()
+                        showResetConsentDialog = false
+                        Toast.makeText(context, "Consent settings cleared.", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Reset", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConsentDialog = false }) {
+                    Text("Cancel")
+                }
             }
-            launch(intent)
-        }
-    } else {
-        Log.i(TAG, "[PRE-Q DEFAULT SMS REQUEST] Launching Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT")
-        val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
-            putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
-        }
-        launch(intent)
+        )
+    }
+
+    // Confirmation: Reset Import History
+    if (showResetHistoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetHistoryDialog = false },
+            title = { Text("Reset Import History?") },
+            text = {
+                Text("This will clear all recorded SMS message fingerprints, allowing previously parsed inbox messages to be re-scanned.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        dbHelper.resetParsedSmsHistory()
+                        showResetHistoryDialog = false
+                        Toast.makeText(context, "Import history reset. You can now re-scan your inbox.", Toast.LENGTH_LONG).show()
+                    }
+                ) {
+                    Text("Reset History")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetHistoryDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

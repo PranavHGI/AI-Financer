@@ -155,6 +155,9 @@ async def chat_with_advisor(
     monthly_totals_map = defaultdict(float)
 
     for tx in transactions:
+        if tx.category == "Transfer":
+            continue
+
         amt = parse_amount(tx.amount)
         if tx.type == "income":
             total_income += amt
@@ -162,12 +165,13 @@ async def chat_with_advisor(
             total_spent += amt
             category_spending[tx.category] = category_spending.get(tx.category, 0.0) + amt
             
-            # Extract month for regression forecasting
+            # Extract month for regression forecasting with timestamp normalization
             try:
-                tx_date = datetime.datetime.utcfromtimestamp(tx.timestamp)
+                ts = tx.timestamp / 1000.0 if tx.timestamp > 1e11 else tx.timestamp
+                tx_date = datetime.datetime.utcfromtimestamp(ts)
                 month_key = f"{tx_date.year}-{tx_date.month:02d}"
                 monthly_totals_map[month_key] += amt
-            except:
+            except Exception:
                 pass
 
     safe_to_spend = total_income - total_spent

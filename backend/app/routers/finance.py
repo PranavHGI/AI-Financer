@@ -4,6 +4,8 @@ from typing import List, Annotated, Union, Dict, Any
 from uuid import uuid4
 from datetime import datetime
 import logging
+import hashlib
+import re
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -45,7 +47,6 @@ def get_transactions(
     db: Session = Depends(get_db)
 ):
     txs = db.query(Transaction).filter(Transaction.user_id == current_user.id).all()
-    print(f"[SERVER GET /transactions] User '{current_user.username}' (id={current_user.id}) queried transactions | Retrieved count: {len(txs)}", flush=True)
     logger.info(f"[SERVER GET /transactions] User {current_user.username} retrieved {len(txs)} transactions")
     return txs
 
@@ -55,38 +56,63 @@ def create_transaction(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db)
 ):
-    print(f"\n==================== [SERVER RECEIVED TRANSACTION] ====================", flush=True)
-    print(f"[AUTH] User: id={current_user.id}, username='{current_user.username}'", flush=True)
-    print(f"[CLIENT PAYLOAD] type='{tx_in.type}', amount='{tx_in.amount}', category='{tx_in.category}', merchant='{tx_in.merchant}', source='{tx_in.source}', timestamp={tx_in.timestamp}, account='{tx_in.masked_account_ref}', desc='{tx_in.description}'", flush=True)
-    
+    # 1. Idempotency check via client_id if supplied
+    if tx_in.client_id:
+        existing_by_client_id = db.query(Transaction).filter(
+            Transaction.user_id == current_user.id,
+            Transaction.client_id == tx_in.client_id
+        ).first()
+        if existing_by_client_id:
+            logger.info(f"[IDEMPOTENT HIT: client_id] Returning existing transaction {existing_by_client_id.id} for client_id {tx_in.client_id}")
+            return existing_by_client_id
+
+    # 2. Normalize timestamp (support both seconds and milliseconds)
+    norm_timestamp = tx_in.timestamp / 1000.0 if tx_in.timestamp > 1e11 else tx_in.timestamp
+
+    # 3. Deterministic SHA-256 duplicate fingerprint
+    norm_amount = re.sub(r"[^\d.]", "", tx_in.amount) or "0.0"
+    norm_type = tx_in.type.strip().lower()
+    norm_merchant = tx_in.merchant.strip().lower()
+    int_ts = int(norm_timestamp)
+    deterministic_fp = hashlib.sha256(
+        f"{current_user.id}|{norm_type}|{norm_amount}|{norm_merchant}|{int_ts}".encode()
+    ).hexdigest()
+
+    # 4. Idempotency check via 120-second time window for identical type, merchant, and amount
+    recent_candidates = db.query(Transaction).filter(
+        Transaction.user_id == current_user.id,
+        Transaction.type == tx_in.type,
+        Transaction.merchant == tx_in.merchant
+    ).all()
+
+    for candidate in recent_candidates:
+        cand_ts = candidate.timestamp / 1000.0 if candidate.timestamp > 1e11 else candidate.timestamp
+        if abs(cand_ts - norm_timestamp) <= 120.0:
+            cand_amt = re.sub(r"[^\d.]", "", candidate.amount) or "0.0"
+            if cand_amt == norm_amount:
+                logger.info(f"[IDEMPOTENT HIT: 120s duplicate window] Returning existing transaction {candidate.id}")
+                return candidate
+
     new_tx = Transaction(
         id=str(uuid4()),
+        client_id=tx_in.client_id,
         user_id=current_user.id,
         type=tx_in.type,
         amount=tx_in.amount,
         category=tx_in.category,
         merchant=tx_in.merchant,
-        timestamp=tx_in.timestamp,
+        timestamp=norm_timestamp,
         source=tx_in.source,
         description=tx_in.description,
         masked_account_ref=tx_in.masked_account_ref,
         confidence=1.0,
-        duplicate_fingerprint=str(uuid4())
+        duplicate_fingerprint=deterministic_fp
     )
     db.add(new_tx)
     db.commit()
     db.refresh(new_tx)
 
-    # Comparative audit between received payload and stored record
-    amount_match = new_tx.amount == tx_in.amount
-    merchant_match = new_tx.merchant == tx_in.merchant
-    category_match = new_tx.category == tx_in.category
-    type_match = new_tx.type == tx_in.type
-
-    print(f"[SERVER PERSISTED] id='{new_tx.id}', duplicate_fingerprint='{new_tx.duplicate_fingerprint}'", flush=True)
-    print(f"[COMPARATIVE AUDIT] Amount match: {amount_match} ('{new_tx.amount}' vs '{tx_in.amount}') | Merchant match: {merchant_match} ('{new_tx.merchant}' vs '{tx_in.merchant}') | Category match: {category_match} | Type match: {type_match}", flush=True)
-    print(f"==================== [SERVER TRANSACTION CREATED 201] ====================\n", flush=True)
-    logger.info(f"[SERVER TRANSACTION 201] id={new_tx.id} user={current_user.username} amount={new_tx.amount} merchant={new_tx.merchant}")
+    logger.info(f"[SERVER TRANSACTION 201] id={new_tx.id} user={current_user.username} amount={new_tx.amount} merchant={new_tx.merchant} client_id={tx_in.client_id}")
     return new_tx
 
 # Categories
@@ -107,7 +133,6 @@ def get_budgets(
     budgets = db.query(Budget).filter(Budget.user_id == current_user.id).all()
     return [{"category": b.category, "amount": b.amount} for b in budgets]
 
-
 # Dashboard
 @router.get("/dashboard", response_model=dict)
 def get_dashboard(
@@ -115,24 +140,48 @@ def get_dashboard(
     db: Session = Depends(get_db)
 ):
     txs = db.query(Transaction).filter(Transaction.user_id == current_user.id).all()
-    income_val = 0.0
-    spent_val = 0.0
+    now = datetime.utcnow()
+    current_month = now.month
+    current_year = now.year
+
+    all_time_income = 0.0
+    all_time_spent = 0.0
+    monthly_income_val = 0.0
+    monthly_spent_val = 0.0
+
     for t in txs:
-        cleaned = t.amount.replace("₹", "").replace("+", "").replace(",", "").strip()
+        # Exclude Transfers between user accounts from expenses and income
+        if t.category == "Transfer":
+            continue
+
+        cleaned = t.amount.replace("₹", "").replace("+", "").replace("-", "").replace(",", "").strip()
         try:
             val = float(cleaned)
-            if t.type == "income":
-                income_val += val
-            else:
-                spent_val += val
         except ValueError:
-            pass
-    
-    balance_val = income_val - spent_val
+            val = 0.0
+
+        ts = t.timestamp / 1000.0 if t.timestamp > 1e11 else t.timestamp
+        try:
+            tx_dt = datetime.utcfromtimestamp(ts)
+        except (ValueError, OSError):
+            tx_dt = now
+
+        is_current_month = (tx_dt.month == current_month and tx_dt.year == current_year)
+
+        if t.type == "income":
+            all_time_income += val
+            if is_current_month:
+                monthly_income_val += val
+        else:
+            all_time_spent += val
+            if is_current_month:
+                monthly_spent_val += val
+
+    available_balance = all_time_income - all_time_spent
     return {
-        "available_balance": f"₹{balance_val:,.2f}",
-        "monthly_income": f"₹{income_val:,.2f}",
-        "monthly_spent": f"₹{spent_val:,.2f}"
+        "available_balance": f"₹{available_balance:,.2f}",
+        "monthly_income": f"₹{monthly_income_val:,.2f}",
+        "monthly_spent": f"₹{monthly_spent_val:,.2f}"
     }
 
 # Categorization Feedback
@@ -176,10 +225,10 @@ def import_sms(
 
         for item in payload.sms_list:
             sms_hash = item.sms_hash or str(uuid4())
-            existing = db.query(SMSImport).filter(SMSImport.sms_hash == sms_hash).first()
+            existing = db.query(SMSImport).filter(SMSImport.user_id == current_user.id, SMSImport.sms_hash == sms_hash).first()
             if existing:
                 skipped_count += 1
-                print(f"[BATCH SKIP] SMS already imported (hash={sms_hash[:8]}...)", flush=True)
+                logger.debug(f"[BATCH SKIP] SMS already imported for user (hash={sms_hash[:8]}...)")
                 continue
 
             new_import = SMSImport(
@@ -193,15 +242,12 @@ def import_sms(
             imported_count += 1
 
         db.commit()
-        print(f"[SERVER COMPARATIVE STATS] Total received: {total_items} | Newly saved: {imported_count} | Skipped/Duplicate: {skipped_count}", flush=True)
-        print(f"==================== [SERVER SMS BATCH IMPORT COMPLETED] ====================\n", flush=True)
+        logger.info(f"[SMS BATCH IMPORT] User={current_user.username} Total={total_items} Imported={imported_count} Skipped={skipped_count}")
         return {"imported_count": imported_count, "skipped_count": skipped_count}
     else:
         # Single SMS import
-        print(f"[CLIENT PAYLOAD] Single SMS import from sender='{payload.sender}', hash='{payload.sms_hash}', timestamp={payload.timestamp}", flush=True)
-        existing = db.query(SMSImport).filter(SMSImport.sms_hash == payload.sms_hash).first()
+        existing = db.query(SMSImport).filter(SMSImport.user_id == current_user.id, SMSImport.sms_hash == payload.sms_hash).first()
         if existing:
-            print(f"[SERVER NOTICE] SMS already imported: hash='{payload.sms_hash}'", flush=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SMS already imported")
             
         new_import = SMSImport(
