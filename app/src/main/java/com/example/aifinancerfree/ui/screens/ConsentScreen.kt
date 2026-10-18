@@ -306,7 +306,7 @@ fun ConsentScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        dbHelper.resetParsedSmsHistory()
+                        dbHelper.resetParsedSmsHistory(app.tokenManager.getUserId())
                         showResetHistoryDialog = false
                         Toast.makeText(context, "Import history reset. You can now re-scan your inbox.", Toast.LENGTH_LONG).show()
                     }

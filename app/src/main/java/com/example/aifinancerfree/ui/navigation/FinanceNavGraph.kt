@@ -79,8 +79,11 @@ fun FinanceNavGraph(
                 LoginScreen(
                     viewModel = authViewModel,
                     onSuccess = {
+                        financeViewModel.resetState()
                         nav.openDemo()
                         profileViewModel.fetchProfile()
+                        financeViewModel.loadData()
+                        financeViewModel.syncRemote()
                     },
                     onBack = { nav.popBackStack() }
                 )
@@ -89,8 +92,11 @@ fun FinanceNavGraph(
                 RegisterScreen(
                     viewModel = authViewModel,
                     onSuccess = {
+                        financeViewModel.resetState()
                         nav.openDemo()
                         profileViewModel.fetchProfile()
+                        financeViewModel.loadData()
+                        financeViewModel.syncRemote()
                     },
                     onBack = { nav.popBackStack() }
                 )
@@ -154,6 +160,7 @@ fun FinanceNavGraph(
                         onConsent = { nav.go(Routes.Consent) },
                         logout = {
                             profileViewModel.logout()
+                            financeViewModel.resetState()
                         }
                     )
                 }

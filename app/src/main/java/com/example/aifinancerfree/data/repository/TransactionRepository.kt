@@ -46,7 +46,8 @@ data class LocalBudget(
 
 class TransactionRepository(
     private val apiService: ApiService,
-    private val dbHelper: DatabaseHelper
+    private val dbHelper: DatabaseHelper,
+    private val tokenManager: com.example.aifinancerfree.data.local.TokenManager? = null
 ) {
     private val syncMutex = Mutex()
     companion object {
@@ -54,12 +55,23 @@ class TransactionRepository(
         val DEFAULT_CATEGORIES = listOf("Food & dining", "Travel", "Shopping", "Education", "Bills", "Entertainment", "Health", "Salary", "Freelance", "Transfer", "Other")
     }
 
+    private fun getActiveUserId(): String {
+        return tokenManager?.getUserId() ?: tokenManager?.getUsername() ?: ""
+    }
+
     suspend fun initializeDefaultBudgets() = withContext(Dispatchers.IO) {
         val db = dbHelper.writableDatabase
+        val activeUser = getActiveUserId()
+        if (activeUser.isEmpty()) return@withContext
+
         for (category in DEFAULT_CATEGORIES) {
-            val cursor = db.rawQuery("SELECT 1 FROM ${DatabaseHelper.TABLE_BUDGETS} WHERE ${DatabaseHelper.COL_BUDGET_CATEGORY} = ?", arrayOf(category))
+            val cursor = db.rawQuery(
+                "SELECT 1 FROM ${DatabaseHelper.TABLE_BUDGETS} WHERE ${DatabaseHelper.COL_BUDGET_CATEGORY} = ? AND ${DatabaseHelper.COL_BUDGET_USER_ID} = ?",
+                arrayOf(category, activeUser)
+            )
             if (cursor.count == 0) {
                 val values = ContentValues().apply {
+                    put(DatabaseHelper.COL_BUDGET_USER_ID, activeUser)
                     put(DatabaseHelper.COL_BUDGET_CATEGORY, category)
                     put(DatabaseHelper.COL_BUDGET_LIMIT, 5000.0) // Default limit is 5000
                 }
@@ -72,7 +84,13 @@ class TransactionRepository(
     suspend fun getLocalTransactions(): List<LocalTransaction> = withContext(Dispatchers.IO) {
         val list = mutableListOf<LocalTransaction>()
         val db = dbHelper.readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} ORDER BY ${DatabaseHelper.COL_TX_DATE} DESC", null)
+        val activeUser = getActiveUserId()
+        if (activeUser.isEmpty()) return@withContext emptyList()
+
+        val cursor = db.rawQuery(
+            "SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_USER_ID} = ? ORDER BY ${DatabaseHelper.COL_TX_DATE} DESC",
+            arrayOf(activeUser)
+        )
         
         if (cursor.moveToFirst()) {
             val idCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ID)
@@ -125,7 +143,9 @@ class TransactionRepository(
     ): Long = withContext(Dispatchers.IO) {
         val db = dbHelper.writableDatabase
         val clientId = java.util.UUID.randomUUID().toString()
+        val activeUser = getActiveUserId()
         val values = ContentValues().apply {
+            put(DatabaseHelper.COL_TX_USER_ID, activeUser)
             put(DatabaseHelper.COL_TX_CLIENT_ID, clientId)
             put(DatabaseHelper.COL_TX_TYPE, type)
             put(DatabaseHelper.COL_TX_AMOUNT, amount)
@@ -171,7 +191,13 @@ class TransactionRepository(
     suspend fun getLocalBudgets(): List<LocalBudget> = withContext(Dispatchers.IO) {
         val list = mutableListOf<LocalBudget>()
         val db = dbHelper.readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM ${DatabaseHelper.TABLE_BUDGETS}", null)
+        val activeUser = getActiveUserId()
+        if (activeUser.isEmpty()) return@withContext emptyList()
+
+        val cursor = db.rawQuery(
+            "SELECT * FROM ${DatabaseHelper.TABLE_BUDGETS} WHERE ${DatabaseHelper.COL_BUDGET_USER_ID} = ?",
+            arrayOf(activeUser)
+        )
         if (cursor.moveToFirst()) {
             val catCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_BUDGET_CATEGORY)
             val limitCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_BUDGET_LIMIT)
@@ -190,7 +216,9 @@ class TransactionRepository(
 
     suspend fun updateBudgetLimit(category: String, limit: Double) = withContext(Dispatchers.IO) {
         val db = dbHelper.writableDatabase
+        val activeUser = getActiveUserId()
         val values = ContentValues().apply {
+            put(DatabaseHelper.COL_BUDGET_USER_ID, activeUser)
             put(DatabaseHelper.COL_BUDGET_CATEGORY, category)
             put(DatabaseHelper.COL_BUDGET_LIMIT, limit)
         }
@@ -216,7 +244,13 @@ class TransactionRepository(
     suspend fun syncPendingTransactions(): Pair<Int, Int> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
             val db = dbHelper.writableDatabase
-            val cursor = db.rawQuery("SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_SYNCED} = 0", null)
+            val activeUser = getActiveUserId()
+            if (activeUser.isEmpty()) return@withLock Pair(0, 0)
+
+            val cursor = db.rawQuery(
+                "SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_SYNCED} = 0 AND ${DatabaseHelper.COL_TX_USER_ID} = ?",
+                arrayOf(activeUser)
+            )
             val pendingCount = cursor.count
 
             Log.i(TAG, "==================== [PENDING TX SYNC START] ====================")
@@ -333,24 +367,27 @@ class TransactionRepository(
         try {
             val remoteTxs = apiService.getTransactions()
             val db = dbHelper.writableDatabase
+            val activeUser = getActiveUserId()
+            if (activeUser.isEmpty()) return@withContext
 
             Log.i(TAG, "[REMOTE FETCH] Received ${remoteTxs.size} transactions from backend.")
 
             var newCachedCount = 0
             for (tx in remoteTxs) {
-                // Check if this remote transaction is already cached by remote_id or client_id
+                // Check if this remote transaction is already cached by remote_id or client_id for this active user
                 val query = if (!tx.clientId.isNullOrEmpty()) {
-                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ? OR ${DatabaseHelper.COL_TX_CLIENT_ID} = ?"
+                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE (${DatabaseHelper.COL_TX_REMOTE_ID} = ? OR ${DatabaseHelper.COL_TX_CLIENT_ID} = ?) AND ${DatabaseHelper.COL_TX_USER_ID} = ?"
                 } else {
-                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ?"
+                    "SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ? AND ${DatabaseHelper.COL_TX_USER_ID} = ?"
                 }
-                val args = if (!tx.clientId.isNullOrEmpty()) arrayOf(tx.id, tx.clientId) else arrayOf(tx.id)
+                val args = if (!tx.clientId.isNullOrEmpty()) arrayOf(tx.id, tx.clientId, activeUser) else arrayOf(tx.id, activeUser)
                 val cursor = db.rawQuery(query, args)
                 val alreadyExists = cursor.count > 0
                 cursor.close()
 
                 if (!alreadyExists) {
                     val values = ContentValues().apply {
+                        put(DatabaseHelper.COL_TX_USER_ID, activeUser)
                         put(DatabaseHelper.COL_TX_REMOTE_ID, tx.id)
                         if (!tx.clientId.isNullOrEmpty()) {
                             put(DatabaseHelper.COL_TX_CLIENT_ID, tx.clientId)
@@ -381,6 +418,7 @@ class TransactionRepository(
             Log.i(TAG, "[REMOTE FETCH] Received ${remoteBudgets.size} budgets from backend.")
             for (b in remoteBudgets) {
                 val values = ContentValues().apply {
+                    put(DatabaseHelper.COL_BUDGET_USER_ID, activeUser)
                     put(DatabaseHelper.COL_BUDGET_CATEGORY, b.category)
                     put(DatabaseHelper.COL_BUDGET_LIMIT, b.amount)
                 }

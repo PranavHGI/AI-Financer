@@ -54,6 +54,15 @@ class FinanceViewModel(
         }
     }
 
+    fun resetState() {
+        _transactions.value = emptyList()
+        _budgets.value = emptyList()
+        _totalIncome.value = 0.0
+        _totalSpent.value = 0.0
+        _accountBalances.value = emptyMap()
+        _insights.value = null
+    }
+
     fun loadData() {
         viewModelScope.launch {
             val txs = repository.getLocalTransactions()

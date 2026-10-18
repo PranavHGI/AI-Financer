@@ -21,6 +21,8 @@ class TokenManager(context: Context) {
     companion object {
         private const val ACCESS_TOKEN_KEY = "access_token"
         private const val REFRESH_TOKEN_KEY = "refresh_token"
+        private const val USER_ID_KEY = "user_id"
+        private const val USERNAME_KEY = "username"
     }
 
     fun saveTokens(accessToken: String, refreshToken: String) {
@@ -29,6 +31,22 @@ class TokenManager(context: Context) {
             putString(REFRESH_TOKEN_KEY, refreshToken)
             apply()
         }
+    }
+
+    fun saveUser(userId: String, username: String) {
+        prefs.edit().apply {
+            putString(USER_ID_KEY, userId)
+            putString(USERNAME_KEY, username)
+            apply()
+        }
+    }
+
+    fun getUserId(): String? {
+        return prefs.getString(USER_ID_KEY, null)
+    }
+
+    fun getUsername(): String? {
+        return prefs.getString(USERNAME_KEY, null)
     }
 
     fun getAccessToken(): String? {
@@ -43,6 +61,8 @@ class TokenManager(context: Context) {
         prefs.edit().apply {
             remove(ACCESS_TOKEN_KEY)
             remove(REFRESH_TOKEN_KEY)
+            remove(USER_ID_KEY)
+            remove(USERNAME_KEY)
             apply()
         }
     }

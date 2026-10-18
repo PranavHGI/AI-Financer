@@ -24,6 +24,7 @@ class AuthRepository(
         return try {
             val body = mapOf("username" to username, "email" to email, "password" to password)
             val response = apiService.register(body)
+            tokenManager.saveUser(response.id, response.username)
             AuthResult.Success(response)
         } catch (e: HttpException) {
             val errorMsg = e.response()?.errorBody()?.string() ?: ""
@@ -43,6 +44,12 @@ class AuthRepository(
         return try {
             val response = apiService.login(username, password)
             tokenManager.saveTokens(response.accessToken, response.refreshToken)
+            try {
+                val profile = apiService.getProfile()
+                tokenManager.saveUser(profile.id, profile.username)
+            } catch (_: Exception) {
+                tokenManager.saveUser(username, username)
+            }
             AuthResult.Success(response)
         } catch (e: HttpException) {
             if (e.code() == 401) {
@@ -61,6 +68,7 @@ class AuthRepository(
     suspend fun getProfile(): AuthResult<UserResponse> {
         return try {
             val response = apiService.getProfile()
+            tokenManager.saveUser(response.id, response.username)
             AuthResult.Success(response)
         } catch (e: HttpException) {
             if (e.code() == 401) {

@@ -8,7 +8,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "aifinancer_local.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
 
         // Table Names
         const val TABLE_TRANSACTIONS = "transactions"
@@ -17,6 +17,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
         // Transactions Columns
         const val COL_TX_ID = "id"
+        const val COL_TX_USER_ID = "user_id"
         const val COL_TX_REMOTE_ID = "remote_id"
         const val COL_TX_CLIENT_ID = "client_id"
         const val COL_TX_TYPE = "type"
@@ -32,10 +33,12 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         // Budgets Columns
         const val COL_BUDGET_CATEGORY = "category"
         const val COL_BUDGET_LIMIT = "limit_amount"
+        const val COL_BUDGET_USER_ID = "user_id"
 
         // Parsed SMS Columns
         const val COL_SMS_FINGERPRINT = "fingerprint"
         const val COL_SMS_BODY_HASH = "body_hash"
+        const val COL_SMS_USER_ID = "user_id"
         const val COL_SMS_TIMESTAMP = "timestamp"
     }
 
@@ -43,6 +46,7 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val createTxTable = """
             CREATE TABLE $TABLE_TRANSACTIONS (
                 $COL_TX_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_TX_USER_ID TEXT,
                 $COL_TX_REMOTE_ID TEXT,
                 $COL_TX_CLIENT_ID TEXT,
                 $COL_TX_TYPE TEXT NOT NULL,
@@ -59,16 +63,20 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
         val createBudgetTable = """
             CREATE TABLE $TABLE_BUDGETS (
-                $COL_BUDGET_CATEGORY TEXT PRIMARY KEY,
-                $COL_BUDGET_LIMIT REAL NOT NULL
+                $COL_BUDGET_CATEGORY TEXT,
+                $COL_BUDGET_LIMIT REAL NOT NULL,
+                $COL_BUDGET_USER_ID TEXT,
+                PRIMARY KEY ($COL_BUDGET_CATEGORY, $COL_BUDGET_USER_ID)
             )
         """.trimIndent()
 
         val createSmsTable = """
             CREATE TABLE $TABLE_PARSED_SMS (
-                $COL_SMS_FINGERPRINT TEXT PRIMARY KEY,
+                $COL_SMS_FINGERPRINT TEXT,
                 $COL_SMS_BODY_HASH TEXT,
-                $COL_SMS_TIMESTAMP INTEGER NOT NULL
+                $COL_SMS_USER_ID TEXT,
+                $COL_SMS_TIMESTAMP INTEGER NOT NULL,
+                PRIMARY KEY ($COL_SMS_FINGERPRINT, $COL_SMS_USER_ID)
             )
         """.trimIndent()
 
@@ -90,10 +98,26 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 db.execSQL("ALTER TABLE $TABLE_PARSED_SMS ADD COLUMN $COL_SMS_BODY_HASH TEXT")
             } catch (_: Exception) {}
         }
+        if (oldVersion < 4) {
+            // Non-destructive migration to version 4: multi-user isolation without data deletion
+            try {
+                db.execSQL("ALTER TABLE $TABLE_TRANSACTIONS ADD COLUMN $COL_TX_USER_ID TEXT")
+            } catch (_: Exception) {}
+            try {
+                db.execSQL("ALTER TABLE $TABLE_BUDGETS ADD COLUMN $COL_BUDGET_USER_ID TEXT")
+            } catch (_: Exception) {}
+            try {
+                db.execSQL("ALTER TABLE $TABLE_PARSED_SMS ADD COLUMN $COL_SMS_USER_ID TEXT")
+            } catch (_: Exception) {}
+        }
     }
 
-    fun resetParsedSmsHistory() {
+    fun resetParsedSmsHistory(userId: String? = null) {
         val db = writableDatabase
-        db.delete(TABLE_PARSED_SMS, null, null)
+        if (!userId.isNullOrEmpty()) {
+            db.delete(TABLE_PARSED_SMS, "$COL_SMS_USER_ID = ?", arrayOf(userId))
+        } else {
+            db.delete(TABLE_PARSED_SMS, null, null)
+        }
     }
 }

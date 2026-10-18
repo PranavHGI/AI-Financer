@@ -65,12 +65,13 @@ class StandardSmsReceiver : BroadcastReceiver() {
 
             Log.i(TAG, "[INCOMING SMS] Processing message from '$sender' (${parts.size} part(s), timestamp=$timestamp)")
 
+            val activeUser = app.tokenManager.getUserId() ?: app.tokenManager.getUsername() ?: ""
             val bodyHash = SmsSyncManager.computeBodyHash(sender, fullBody)
 
-            // Check duplicate in parsed_sms within 120s
+            // Check duplicate in parsed_sms within 120s for active user
             val cur = db.rawQuery(
-                "SELECT ${DatabaseHelper.COL_SMS_TIMESTAMP} FROM ${DatabaseHelper.TABLE_PARSED_SMS} WHERE ${DatabaseHelper.COL_SMS_BODY_HASH} = ? OR ${DatabaseHelper.COL_SMS_FINGERPRINT} LIKE ?",
-                arrayOf(bodyHash, "${bodyHash}_%")
+                "SELECT ${DatabaseHelper.COL_SMS_TIMESTAMP} FROM ${DatabaseHelper.TABLE_PARSED_SMS} WHERE (${DatabaseHelper.COL_SMS_BODY_HASH} = ? OR ${DatabaseHelper.COL_SMS_FINGERPRINT} LIKE ?) AND ${DatabaseHelper.COL_SMS_USER_ID} = ?",
+                arrayOf(bodyHash, "${bodyHash}_%", activeUser)
             )
             var isDuplicate = false
             if (cur.moveToFirst()) {
@@ -102,6 +103,7 @@ class StandardSmsReceiver : BroadcastReceiver() {
             try {
                 // Record fingerprint
                 val smsVal = ContentValues().apply {
+                    put(DatabaseHelper.COL_SMS_USER_ID, activeUser)
                     put(DatabaseHelper.COL_SMS_FINGERPRINT, "${bodyHash}_${timestamp}")
                     put(DatabaseHelper.COL_SMS_BODY_HASH, bodyHash)
                     put(DatabaseHelper.COL_SMS_TIMESTAMP, timestamp)
@@ -115,6 +117,7 @@ class StandardSmsReceiver : BroadcastReceiver() {
 
                 // Insert transaction record
                 val txVal = ContentValues().apply {
+                    put(DatabaseHelper.COL_TX_USER_ID, activeUser)
                     put(DatabaseHelper.COL_TX_CLIENT_ID, clientId)
                     put(DatabaseHelper.COL_TX_TYPE, extracted.type)
                     put(DatabaseHelper.COL_TX_AMOUNT, extracted.amount)

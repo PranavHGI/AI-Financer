@@ -59,12 +59,16 @@ class SmsSyncManager(
 
         Log.i(TAG, "==================== [SMS INBOX SCAN START] ====================")
 
+        val app = context.applicationContext as? com.example.aifinancerfree.AIFinancerApplication
+            ?: com.example.aifinancerfree.AIFinancerApplication.instance
+        val activeUser = app.tokenManager.getUserId() ?: app.tokenManager.getUsername() ?: ""
+
         // 1. Preload all existing fingerprints into memory for O(1) duplicate checks
         val existingFingerprints = mutableMapOf<String, MutableList<Long>>()
         val readableDb = dbHelper.readableDatabase
         val cur = readableDb.rawQuery(
-            "SELECT ${DatabaseHelper.COL_SMS_FINGERPRINT}, ${DatabaseHelper.COL_SMS_BODY_HASH}, ${DatabaseHelper.COL_SMS_TIMESTAMP} FROM ${DatabaseHelper.TABLE_PARSED_SMS}",
-            null
+            "SELECT ${DatabaseHelper.COL_SMS_FINGERPRINT}, ${DatabaseHelper.COL_SMS_BODY_HASH}, ${DatabaseHelper.COL_SMS_TIMESTAMP} FROM ${DatabaseHelper.TABLE_PARSED_SMS} WHERE ${DatabaseHelper.COL_SMS_USER_ID} = ?",
+            arrayOf(activeUser)
         )
         if (cur.moveToFirst()) {
             val fpCol = cur.getColumnIndex(DatabaseHelper.COL_SMS_FINGERPRINT)
@@ -126,6 +130,7 @@ class SmsSyncManager(
 
                             // Register SMS fingerprint
                             val smsValues = ContentValues().apply {
+                                put(DatabaseHelper.COL_SMS_USER_ID, activeUser)
                                 put(DatabaseHelper.COL_SMS_FINGERPRINT, "${bodyHash}_${dateMs}")
                                 put(DatabaseHelper.COL_SMS_BODY_HASH, bodyHash)
                                 put(DatabaseHelper.COL_SMS_TIMESTAMP, dateMs)
@@ -139,6 +144,7 @@ class SmsSyncManager(
 
                             // Save as local transaction record (synced = 0) with client_id and source
                             val txValues = ContentValues().apply {
+                                put(DatabaseHelper.COL_TX_USER_ID, activeUser)
                                 put(DatabaseHelper.COL_TX_CLIENT_ID, clientId)
                                 put(DatabaseHelper.COL_TX_TYPE, extracted.type)
                                 put(DatabaseHelper.COL_TX_AMOUNT, extracted.amount)

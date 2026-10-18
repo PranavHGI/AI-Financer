@@ -41,7 +41,7 @@ class AIFinancerApplication : Application() {
         authRepository = AuthRepository(apiClient.apiService, tokenManager)
         consentPreferences = ConsentPreferences(this)
         databaseHelper = DatabaseHelper(this)
-        transactionRepository = TransactionRepository(apiClient.apiService, databaseHelper)
+        transactionRepository = TransactionRepository(apiClient.apiService, databaseHelper, tokenManager)
         smsAccessManager = SmsAccessManager(this, consentPreferences)
     }
 
