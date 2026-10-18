@@ -3,6 +3,7 @@ package com.example.aifinancerfree.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.provider.Telephony
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +39,8 @@ import androidx.compose.material.icons.filled.Repeat
 import com.example.aifinancerfree.ui.viewmodel.FinanceViewModel
 import java.text.SimpleDateFormat
 import java.util.*
+
+private const val TAG_DASHBOARD = "DashboardScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,11 +79,15 @@ fun DashboardScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
+        Log.i(TAG_DASHBOARD, "[SMS PERMISSION RESULT] READ_SMS isGranted=$isGranted")
         if (isGranted) {
+            Log.i(TAG_DASHBOARD, "[SMS PERMISSION GRANTED] Launching scanSmsInbox...")
             viewModel.scanSmsInbox(context) { count ->
+                Log.i(TAG_DASHBOARD, "[SMS SCAN COMPLETE] Finished inbox scan. Total new transactions: $count")
                 Toast.makeText(context, "Scan complete! Imported $count transactions.", Toast.LENGTH_LONG).show()
             }
         } else {
+            Log.w(TAG_DASHBOARD, "[SMS PERMISSION DENIED] User denied READ_SMS permission")
             Toast.makeText(context, "SMS read permission is required to import history.", Toast.LENGTH_SHORT).show()
         }
     }
@@ -142,22 +149,30 @@ fun DashboardScreen(
         item {
             Card(
                 onClick = {
-                    val isDefault = Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
-                    if (!isDefault) {
-                        Toast.makeText(context, "Please set AI Financer as default SMS app in Settings first.", Toast.LENGTH_LONG).show()
-                    } else {
-                        val hasPermission = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.READ_SMS
-                        ) == PackageManager.PERMISSION_GRANTED
+                    val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
+                    val isDefault = currentDefault == context.packageName
+                    val hasReadPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.READ_SMS
+                    ) == PackageManager.PERMISSION_GRANTED
 
-                        if (hasPermission) {
-                            viewModel.scanSmsInbox(context) { count ->
-                                Toast.makeText(context, "Scan complete! Imported $count transactions.", Toast.LENGTH_LONG).show()
-                            }
-                        } else {
-                            permissionLauncher.launch(Manifest.permission.READ_SMS)
+                    Log.i(
+                        TAG_DASHBOARD,
+                        "==================== [SCAN SMS BUTTON CLICKED] ====================\n" +
+                        "Is Default SMS App: $isDefault (Current Default: '$currentDefault')\n" +
+                        "READ_SMS Permission Granted: $hasReadPermission\n" +
+                        "==================================================================="
+                    )
+
+                    if (hasReadPermission) {
+                        Log.i(TAG_DASHBOARD, "[SMS SCAN] Initiating scanSmsInbox with existing READ_SMS permission...")
+                        viewModel.scanSmsInbox(context) { count ->
+                            Log.i(TAG_DASHBOARD, "[SMS SCAN RESULT] Callback completed with $count transactions imported.")
+                            Toast.makeText(context, "Scan complete! Imported $count transactions.", Toast.LENGTH_LONG).show()
                         }
+                    } else {
+                        Log.i(TAG_DASHBOARD, "[SMS SCAN] Requesting READ_SMS permission via system dialog...")
+                        permissionLauncher.launch(Manifest.permission.READ_SMS)
                     }
                 },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),

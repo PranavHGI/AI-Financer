@@ -179,15 +179,23 @@ class FinanceViewModel(
     fun scanSmsInbox(context: Context, onSyncComplete: (Int) -> Unit) {
         viewModelScope.launch {
             _isSyncing.value = true
+            Log.i("FinanceViewModel", "[scanSmsInbox] Triggered SMS inbox scan...")
             try {
                 val syncManager = SmsSyncManager(context, dbHelper)
                 val newCount = syncManager.syncInbox()
+                Log.i("FinanceViewModel", "[scanSmsInbox] syncInbox returned $newCount new transactions.")
                 
                 if (newCount > 0) {
+                    Log.i("FinanceViewModel", "[scanSmsInbox] Uploading new transactions to backend server...")
                     repository.syncPendingTransactions()
                     loadData()
+                } else {
+                    Log.i("FinanceViewModel", "[scanSmsInbox] No new transactions found. Skipping remote upload.")
                 }
                 onSyncComplete(newCount)
+            } catch (e: Exception) {
+                Log.e("FinanceViewModel", "[scanSmsInbox] Exception occurred during SMS scan", e)
+                onSyncComplete(0)
             } finally {
                 _isSyncing.value = false
             }

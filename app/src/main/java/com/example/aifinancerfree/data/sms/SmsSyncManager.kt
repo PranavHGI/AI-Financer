@@ -24,15 +24,30 @@ class SmsSyncManager(
      */
     fun syncInbox(): Int {
         var newTxCount = 0
+        var totalExamined = 0
+        var alreadyParsedCount = 0
+        var nonFinancialCount = 0
+
         val contentResolver = context.contentResolver
         val inboxUri = Uri.parse("content://sms/inbox")
 
         val projection = arrayOf("_id", "address", "body", "date")
         var cursor: Cursor? = null
 
+        Log.i(TAG, "==================== [SMS INBOX SCAN START] ====================")
+        Log.i(TAG, "Querying URI: $inboxUri with projection: ${projection.joinToString()}")
+
         try {
             cursor = contentResolver.query(inboxUri, projection, null, null, "date DESC")
-            if (cursor != null && cursor.moveToFirst()) {
+            if (cursor == null) {
+                Log.e(TAG, "[INBOX SCAN FAILED] ContentResolver returned NULL cursor. Check READ_SMS permission.")
+                return 0
+            }
+
+            val totalInBox = cursor.count
+            Log.i(TAG, "[INBOX SCAN] Found $totalInBox total messages in SMS inbox.")
+
+            if (cursor.moveToFirst()) {
                 val addressCol = cursor.getColumnIndexOrThrow("address")
                 val bodyCol = cursor.getColumnIndexOrThrow("body")
                 val dateCol = cursor.getColumnIndexOrThrow("date")
@@ -40,6 +55,7 @@ class SmsSyncManager(
                 val localDb = dbHelper.writableDatabase
 
                 do {
+                    totalExamined++
                     val address = cursor.getString(addressCol) ?: ""
                     val body = cursor.getString(bodyCol) ?: ""
                     val dateMs = cursor.getLong(dateCol)
@@ -49,6 +65,7 @@ class SmsSyncManager(
 
                     // Check if fingerprint is already registered in parsed_sms
                     if (isSmsAlreadyParsed(fingerprint)) {
+                        alreadyParsedCount++
                         continue
                     }
 
@@ -80,24 +97,44 @@ class SmsSyncManager(
                                 put(DatabaseHelper.COL_TX_DATE, dateMs)
                                 put(DatabaseHelper.COL_TX_SYNCED, 0)
                             }
-                            localDb.insert(DatabaseHelper.TABLE_TRANSACTIONS, null, txValues)
+                            val rowId = localDb.insert(DatabaseHelper.TABLE_TRANSACTIONS, null, txValues)
 
                             localDb.setTransactionSuccessful()
                             newTxCount++
-                            Log.d(TAG, "Successfully parsed transaction from SMS. Merchant: ${extracted.merchant}, Amount: ${extracted.amount}")
+                            Log.i(
+                                TAG,
+                                "[TX SAVED TO SQLITE] Local DB ID: $rowId | Merchant: '${extracted.merchant}' | " +
+                                "Amount: ₹${extracted.amount} | Type: ${extracted.type} | Sender: '$address'"
+                            )
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error writing transaction to local DB", e)
+                            Log.e(TAG, "[SQLITE INSERT ERROR] Error writing transaction to local DB", e)
                         } finally {
                             localDb.endTransaction()
                         }
+                    } else {
+                        nonFinancialCount++
                     }
                 } while (cursor.moveToNext())
+            } else {
+                Log.i(TAG, "[INBOX SCAN] SMS inbox is empty (cursor.moveToFirst() == false).")
             }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "[SECURITY EXCEPTION] READ_SMS permission is not granted! Cannot access content://sms/inbox", e)
         } catch (e: Exception) {
-            Log.e(TAG, "Error scanning system SMS inbox", e)
+            Log.e(TAG, "[INBOX SCAN ERROR] Unexpected error scanning system SMS inbox", e)
         } finally {
             cursor?.close()
         }
+
+        Log.i(
+            TAG,
+            "==================== [SMS INBOX SCAN SUMMARY] ====================\n" +
+            "Messages Examined: $totalExamined\n" +
+            "Previously Parsed (Skipped): $alreadyParsedCount\n" +
+            "Non-Financial / Skipped: $nonFinancialCount\n" +
+            "New Transactions Added: $newTxCount\n" +
+            "=================================================================="
+        )
 
         return newTxCount
     }

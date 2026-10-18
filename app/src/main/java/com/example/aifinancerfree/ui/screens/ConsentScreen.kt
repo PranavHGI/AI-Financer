@@ -25,6 +25,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.aifinancerfree.data.local.ConsentPreferences
 
+import android.app.Activity
+import android.util.Log
+
+private const val TAG = "ConsentScreen"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConsentScreen(
@@ -37,8 +42,33 @@ fun ConsentScreen(
 
     val roleLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
-    ) { _ ->
-        isDefaultSmsApp = checkDefaultSmsStatus(context)
+    ) { result ->
+        val resultCode = result.resultCode
+        val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
+        val isDefault = checkDefaultSmsStatus(context)
+        isDefaultSmsApp = isDefault
+
+        Log.i(
+            TAG,
+            "==================== [DEFAULT SMS ROLE RESULT] ====================\n" +
+            "Result Code: $resultCode (RESULT_OK = ${Activity.RESULT_OK}, RESULT_CANCELED = ${Activity.RESULT_CANCELED})\n" +
+            "Current Default SMS Package: '$currentDefault'\n" +
+            "AI Financer Package: '${context.packageName}'\n" +
+            "Is AI Financer Now Default: $isDefault\n" +
+            "==================================================================="
+        )
+
+        if (isDefault) {
+            prefs.setSmsTrackingEnabled(true)
+            isTrackingEnabled = true
+            Toast.makeText(context, "AI Financer is now set as default SMS app!", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                context,
+                "Default SMS app was not changed (Status: $resultCode). Current default: $currentDefault",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     Scaffold(
@@ -189,17 +219,52 @@ fun ConsentScreen(
 }
 
 private fun checkDefaultSmsStatus(context: Context): Boolean {
-    return Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+    val currentDefault = Telephony.Sms.getDefaultSmsPackage(context)
+    val isDefault = currentDefault == context.packageName
+    Log.d(TAG, "[DEFAULT SMS AUDIT] App pkg: '${context.packageName}' | System default pkg: '$currentDefault' | IsDefault: $isDefault")
+    return isDefault
 }
 
 private fun requestDefaultSmsRole(context: Context, launch: (Intent) -> Unit) {
+    Log.i(TAG, "[SET DEFAULT SMS CLICKED] Android SDK: ${Build.VERSION.SDK_INT}, Package: '${context.packageName}'")
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val roleManager = context.getSystemService(Context.ROLE_SERVICE) as RoleManager
-        if (roleManager.isRoleAvailable(RoleManager.ROLE_SMS)) {
-            val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
+        val roleManager = context.getSystemService(Context.ROLE_SERVICE) as? RoleManager
+        if (roleManager != null) {
+            val isAvailable = roleManager.isRoleAvailable(RoleManager.ROLE_SMS)
+            val isHeld = roleManager.isRoleHeld(RoleManager.ROLE_SMS)
+            Log.i(TAG, "[ROLE_SMS CHECK] isRoleAvailable: $isAvailable, isRoleHeld: $isHeld")
+
+            if (isAvailable) {
+                if (isHeld) {
+                    Log.i(TAG, "[ROLE_SMS CHECK] Role already held by this app.")
+                    Toast.makeText(context, "AI Financer is already the default SMS app.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Log.i(TAG, "[ROLE_SMS REQUEST] Launching system RoleManager.ROLE_SMS prompt dialog")
+                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
+                    launch(intent)
+                }
+            } else {
+                Log.w(TAG, "[ROLE_SMS WARNING] RoleManager.ROLE_SMS is NOT available on this device/ROM. Falling back to Intent.")
+                try {
+                    val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
+                        putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
+                    }
+                    launch(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "[ROLE_SMS FALLBACK FAILED] Direct intent failed. Opening default apps settings screen.", e)
+                    val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
+                    context.startActivity(settingsIntent)
+                }
+            }
+        } else {
+            Log.w(TAG, "[ROLE_SMS WARNING] RoleManager service is null. Falling back to ACTION_CHANGE_DEFAULT.")
+            val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
+                putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
+            }
             launch(intent)
         }
     } else {
+        Log.i(TAG, "[PRE-Q DEFAULT SMS REQUEST] Launching Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT")
         val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
             putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
         }

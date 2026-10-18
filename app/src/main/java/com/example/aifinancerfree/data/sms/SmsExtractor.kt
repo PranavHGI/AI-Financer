@@ -1,5 +1,6 @@
 package com.example.aifinancerfree.data.sms
 
+import android.util.Log
 import java.util.regex.Pattern
 
 data class ExtractedTx(
@@ -11,69 +12,86 @@ data class ExtractedTx(
 )
 
 object SmsExtractor {
+    private const val TAG = "SmsExtractor"
 
-    // Regex patterns for extracting Amount
+    // Regex patterns for extracting Amount (supports ₹, Rs., Rs, INR with or without decimals)
     private val amountPatterns = listOf(
-        Pattern.compile("(?i)(?:rs\\.?|inr)\\s*([0-9,]+\\.[0-9]{2})"),
-        Pattern.compile("(?i)(?:spent|debited|charging|charged|purchase of)\\s*(?:rs\\.?|inr)?\\s*([0-9,]+\\.[0-9]{2})"),
-        Pattern.compile("(?i)(?:debited by|spent of)\\s*([0-9,]+\\.[0-9]{2})")
+        Pattern.compile("(?i)(?:rs\\.?|inr|₹)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)"),
+        Pattern.compile("(?i)(?:spent|debited|charging|charged|paid|sent|transferred|credited|received|purchase of)\\s*(?:for|by|of)?\\s*(?:rs\\.?|inr|₹)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)"),
+        Pattern.compile("(?i)(?:debited by|spent of|paid of|credited with)\\s*(?:rs\\.?|inr|₹)?\\s*([0-9,]+(?:\\.[0-9]{1,2})?)"),
+        Pattern.compile("(?i)(?:inr|rs\\.?|₹)\\s*([0-9]+)")
     )
 
     // Regex patterns for Merchant/Recipient
     private val merchantPatterns = listOf(
-        Pattern.compile("(?i)at\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\s+dt|\\.|$)"),
-        Pattern.compile("(?i)towards\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\s+dt|\\.|$)"),
-        Pattern.compile("(?i)to\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\s+dt|\\.|$)"),
-        Pattern.compile("(?i)transfer to\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\.|$)")
+        Pattern.compile("(?i)(?:at|towards|to|vpa|info\\*|for)\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\s+dt|\\s+avail|\\s+balance|\\.|$)"),
+        Pattern.compile("(?i)(?:transfer to|paid to|sent to)\\s+([A-Za-z0-9\\s\\-*]+?)(?=\\s+on|\\s+Ref|\\.|$)"),
+        Pattern.compile("(?i)at\\s+([A-Za-z0-9\\s\\-*]+)")
     )
 
     // Regex patterns for Card/Account ending digits
     private val accountPatterns = listOf(
-        Pattern.compile("(?i)(?:a/c|acct|account|card|ending|xx)\\s*(?:ending)?\\s*\\**([0-9]{3,4})"),
+        Pattern.compile("(?i)(?:a/c|acct|account|card|ending|xx|vpa)\\s*(?:ending|no\\.?)?\\s*\\**([0-9]{3,4})"),
         Pattern.compile("(?i)(?:ending with|ending in)\\s*([0-9]{3,4})")
     )
 
     fun extract(smsBody: String): ExtractedTx? {
         val lowercaseBody = smsBody.lowercase()
+        val preview = if (smsBody.length > 50) smsBody.take(50) + "..." else smsBody
 
-        // We only care about debit/spent transaction messages, ignoring credit messages or OTPs
-        if (lowercaseBody.contains("otp") || lowercaseBody.contains("verification code")) {
+        // 1. Skip non-transactional messages like OTPs
+        if (lowercaseBody.contains("otp") || lowercaseBody.contains("verification code") || lowercaseBody.contains("one time password")) {
+            Log.d(TAG, "[SKIP: OTP] Discarding security OTP message: '$preview'")
             return null
         }
+
+        // 2. Classify debit (expense) or credit (income)
         val isDebit = lowercaseBody.contains("debited") || lowercaseBody.contains("spent") || 
                       lowercaseBody.contains("charged") || lowercaseBody.contains("purchase") || 
-                      lowercaseBody.contains("txn")
+                      lowercaseBody.contains("paid") || lowercaseBody.contains("sent") ||
+                      lowercaseBody.contains("transferred") || lowercaseBody.contains("txn") ||
+                      lowercaseBody.contains("withdrawn")
 
-        if (!isDebit) {
+        val isCredit = lowercaseBody.contains("credited") || lowercaseBody.contains("deposited") || 
+                       lowercaseBody.contains("received") || lowercaseBody.contains("refund") || 
+                       lowercaseBody.contains("cashback") || lowercaseBody.contains("salary")
+
+        if (!isDebit && !isCredit) {
+            Log.d(TAG, "[SKIP: NON-FINANCIAL] Message does not contain financial debit/credit indicators: '$preview'")
             return null
         }
 
-        // 1. Extract Amount
+        val txType = if (isCredit && !isDebit) "income" else "expense"
+
+        // 3. Extract Amount
         var amount: Double? = null
         for (pattern in amountPatterns) {
             val matcher = pattern.matcher(smsBody)
             if (matcher.find()) {
                 val rawAmountStr = matcher.group(1)?.replace(",", "")
                 amount = rawAmountStr?.toDoubleOrNull()
-                if (amount != null) break
+                if (amount != null && amount > 0.0) break
             }
         }
-        if (amount == null) return null // If amount could not be extracted, discard the message
+        if (amount == null) {
+            Log.w(TAG, "[SKIP: NO AMOUNT] Financial keywords found, but amount could not be parsed: '$preview'")
+            return null
+        }
 
-        // 2. Extract Merchant
-        var merchant = "Unknown Merchant"
+        // 4. Extract Merchant
+        var merchant = if (txType == "income") "Deposit / Transfer" else "Unknown Merchant"
         for (pattern in merchantPatterns) {
             val matcher = pattern.matcher(smsBody)
             if (matcher.find()) {
                 val match = matcher.group(1)?.trim()
                 if (!match.isNullOrEmpty() && match.length > 2) {
-                    merchant = match
+                    merchant = match.take(30).trim()
                     break
                 }
             }
         }
 
-        // 3. Extract Account
+        // 5. Extract Account reference
         var account = "Main Account"
         for (pattern in accountPatterns) {
             val matcher = pattern.matcher(smsBody)
@@ -86,15 +104,24 @@ object SmsExtractor {
             }
         }
 
-        // 4. Map Category
-        val category = mapCategory(merchant)
+        // 6. Map Category
+        val category = if (txType == "income") {
+            if (lowercaseBody.contains("salary")) "Salary" else "Freelance"
+        } else {
+            mapCategory(merchant)
+        }
+
+        Log.i(
+            TAG,
+            "[EXTRACT SUCCESS] Parsed transaction -> Type: $txType | Amount: ₹$amount | Merchant: '$merchant' | Category: '$category' | Account: '$account'"
+        )
 
         return ExtractedTx(
             amount = amount,
             merchant = merchant,
             category = category,
             account = account,
-            type = "expense"
+            type = txType
         )
     }
 

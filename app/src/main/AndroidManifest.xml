@@ -60,6 +60,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Standard incoming SMS receiver when not default app -->
+        <receiver
+            android:name=".data.sms.StandardSmsReceiver"
+            android:exported="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".data.sms.MmsReceiver"
             android:permission="android.permission.BROADCAST_WAP_PUSH"

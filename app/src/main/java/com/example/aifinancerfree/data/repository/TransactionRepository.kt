@@ -18,6 +18,7 @@ import com.example.aifinancerfree.data.model.AddSavingsRequest
 import com.example.aifinancerfree.data.model.InsightResponse
 import com.example.aifinancerfree.data.network.ApiService
 import okhttp3.MultipartBody
+import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -203,7 +204,11 @@ class TransactionRepository(
         syncMutex.withLock {
             val db = dbHelper.writableDatabase
             val cursor = db.rawQuery("SELECT * FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_SYNCED} = 0", null)
-            
+            val pendingCount = cursor.count
+
+            Log.i(TAG, "==================== [PENDING TX SYNC START] ====================")
+            Log.i(TAG, "[SYNC PENDING] Found $pendingCount unsynced transaction(s) in local SQLite.")
+
             if (cursor.moveToFirst()) {
                 val idCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_ID)
                 val typeCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_TYPE)
@@ -214,6 +219,8 @@ class TransactionRepository(
                 val notesCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_NOTES)
                 val dateCol = cursor.getColumnIndexOrThrow(DatabaseHelper.COL_TX_DATE)
 
+                var syncSuccessCount = 0
+
                 do {
                     val localId = cursor.getLong(idCol)
                     val type = cursor.getString(typeCol)
@@ -223,31 +230,71 @@ class TransactionRepository(
                     val account = cursor.getString(acctCol)
                     val notes = cursor.getString(notesCol)
                     val date = cursor.getLong(dateCol)
+                    val source = if (notes?.contains("Parsed") == true) "sms" else "manual"
 
+                    val formattedAmount = "₹${amount}"
                     val request = TransactionRequest(
                         type = type,
-                        amount = "₹${amount}",
+                        amount = formattedAmount,
                         category = category,
                         merchant = merchant,
                         timestamp = date / 1000.0,
-                        source = if (notes?.contains("Parsed") == true) "sms" else "manual",
+                        source = source,
                         description = notes ?: "",
                         maskedAccountRef = account ?: ""
                     )
 
+                    Log.i(
+                        TAG,
+                        "--> [CLIENT SENDING TX TO SERVER] local_id=$localId | " +
+                        "Payload: type='$type', amount='$formattedAmount', category='$category', merchant='$merchant', " +
+                        "source='$source', timestamp=${date / 1000.0}, account='$account'"
+                    )
+
                     try {
                         val response = apiService.createTransaction(request)
+
+                        // Comparative Verification
+                        val amountMatched = response.amount.contains(amount.toString()) || response.amount == formattedAmount
+                        val merchantMatched = response.merchant.equals(merchant, ignoreCase = true)
+                        val typeMatched = response.type.equals(type, ignoreCase = true)
+
+                        Log.i(
+                            TAG,
+                            "<-- [CLIENT RECEIVED RESPONSE FROM SERVER] local_id=$localId -> remote_id=${response.id}\n" +
+                            "    Returned Amount: '${response.amount}' (Match: $amountMatched)\n" +
+                            "    Returned Merchant: '${response.merchant}' (Match: $merchantMatched)\n" +
+                            "    Returned Type: '${response.type}' (Match: $typeMatched)\n" +
+                            "    Returned Confidence: ${response.confidence}"
+                        )
+
                         val updateValues = ContentValues().apply {
                             put(DatabaseHelper.COL_TX_REMOTE_ID, response.id)
                             put(DatabaseHelper.COL_TX_SYNCED, 1)
                         }
                         db.update(DatabaseHelper.TABLE_TRANSACTIONS, updateValues, "${DatabaseHelper.COL_TX_ID} = ?", arrayOf(localId.toString()))
-                        Log.d(TAG, "Synced transaction local_id=$localId to backend as remote_id=${response.id}")
+                        syncSuccessCount++
+                    } catch (e: HttpException) {
+                        val errorBody = e.response()?.errorBody()?.string() ?: "none"
+                        Log.e(
+                            TAG,
+                            "[HTTP SYNC ERROR] local_id=$localId failed with HTTP ${e.code()}: ${e.message()} | " +
+                            "Error Body: $errorBody",
+                            e
+                        )
+                        break // Stop sync loop if we hit a server error
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to sync transaction local_id=$localId to backend", e)
+                        Log.e(TAG, "[NETWORK SYNC ERROR] local_id=$localId failed: ${e.localizedMessage}", e)
                         break // Stop sync loop if we hit a network issue
                     }
                 } while (cursor.moveToNext())
+
+                Log.i(
+                    TAG,
+                    "==================== [PENDING TX SYNC COMPLETE] ====================\n" +
+                    "Total Unsynced: $pendingCount | Successfully Uploaded: $syncSuccessCount\n" +
+                    "===================================================================="
+                )
             }
             cursor.close()
         }
@@ -257,10 +304,14 @@ class TransactionRepository(
      * Downloads recent transaction records from the server and caches them locally, avoiding duplicates.
      */
     suspend fun fetchFromRemote() = withContext(Dispatchers.IO) {
+        Log.i(TAG, "[REMOTE FETCH] Requesting GET /transactions from backend...")
         try {
             val remoteTxs = apiService.getTransactions()
             val db = dbHelper.writableDatabase
 
+            Log.i(TAG, "[REMOTE FETCH] Received ${remoteTxs.size} transactions from backend.")
+
+            var newCachedCount = 0
             for (tx in remoteTxs) {
                 // Check if this remote transaction is already cached
                 val cursor = db.rawQuery("SELECT 1 FROM ${DatabaseHelper.TABLE_TRANSACTIONS} WHERE ${DatabaseHelper.COL_TX_REMOTE_ID} = ?", arrayOf(tx.id))
@@ -284,11 +335,15 @@ class TransactionRepository(
                         put(DatabaseHelper.COL_TX_SYNCED, 1)
                     }
                     db.insert(DatabaseHelper.TABLE_TRANSACTIONS, null, values)
+                    newCachedCount++
                 }
             }
 
+            Log.i(TAG, "[REMOTE FETCH SUMMARY] Total remote: ${remoteTxs.size} | Newly inserted to SQLite: $newCachedCount")
+
             // Sync budgets from backend as well
             val remoteBudgets = apiService.getBudgets()
+            Log.i(TAG, "[REMOTE FETCH] Received ${remoteBudgets.size} budgets from backend.")
             for (b in remoteBudgets) {
                 val values = ContentValues().apply {
                     put(DatabaseHelper.COL_BUDGET_CATEGORY, b.category)
@@ -301,8 +356,11 @@ class TransactionRepository(
                     android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE
                 )
             }
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string() ?: "none"
+            Log.e(TAG, "[REMOTE FETCH HTTP ERROR] HTTP ${e.code()}: ${e.message()} | Error Body: $errorBody", e)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to fetch transactions from remote backend", e)
+            Log.e(TAG, "[REMOTE FETCH ERROR] Failed to fetch transactions from remote backend", e)
         }
     }
 

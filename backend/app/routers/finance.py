@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Annotated
+from typing import List, Annotated, Union, Dict, Any
 from uuid import uuid4
 from datetime import datetime
+import logging
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -21,10 +22,11 @@ from app.schemas.transaction import TransactionCreate, TransactionResponse
 from app.schemas.goal import GoalCreate, GoalResponse
 from app.schemas.category import CategoryResponse
 from app.schemas.feedback import FeedbackCreate, FeedbackResponse
-from app.schemas.sms_import import SMSImportCreate, SMSImportResponse
+from app.schemas.sms_import import SMSImportCreate, SMSImportResponse, SmsBatchImportRequest, SmsBatchImportResponse
 from app.schemas.insight import InsightResponse
 from app.schemas.conversation import ConversationMessageResponse, AskAdvisorRequest
 
+logger = logging.getLogger("aifinancer.finance")
 router = APIRouter(tags=["Finance"])
 
 # Profile
@@ -43,6 +45,8 @@ def get_transactions(
     db: Session = Depends(get_db)
 ):
     txs = db.query(Transaction).filter(Transaction.user_id == current_user.id).all()
+    print(f"[SERVER GET /transactions] User '{current_user.username}' (id={current_user.id}) queried transactions | Retrieved count: {len(txs)}", flush=True)
+    logger.info(f"[SERVER GET /transactions] User {current_user.username} retrieved {len(txs)} transactions")
     return txs
 
 @router.post("/transactions", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED)
@@ -51,6 +55,10 @@ def create_transaction(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db)
 ):
+    print(f"\n==================== [SERVER RECEIVED TRANSACTION] ====================", flush=True)
+    print(f"[AUTH] User: id={current_user.id}, username='{current_user.username}'", flush=True)
+    print(f"[CLIENT PAYLOAD] type='{tx_in.type}', amount='{tx_in.amount}', category='{tx_in.category}', merchant='{tx_in.merchant}', source='{tx_in.source}', timestamp={tx_in.timestamp}, account='{tx_in.masked_account_ref}', desc='{tx_in.description}'", flush=True)
+    
     new_tx = Transaction(
         id=str(uuid4()),
         user_id=current_user.id,
@@ -68,6 +76,17 @@ def create_transaction(
     db.add(new_tx)
     db.commit()
     db.refresh(new_tx)
+
+    # Comparative audit between received payload and stored record
+    amount_match = new_tx.amount == tx_in.amount
+    merchant_match = new_tx.merchant == tx_in.merchant
+    category_match = new_tx.category == tx_in.category
+    type_match = new_tx.type == tx_in.type
+
+    print(f"[SERVER PERSISTED] id='{new_tx.id}', duplicate_fingerprint='{new_tx.duplicate_fingerprint}'", flush=True)
+    print(f"[COMPARATIVE AUDIT] Amount match: {amount_match} ('{new_tx.amount}' vs '{tx_in.amount}') | Merchant match: {merchant_match} ('{new_tx.merchant}' vs '{tx_in.merchant}') | Category match: {category_match} | Type match: {type_match}", flush=True)
+    print(f"==================== [SERVER TRANSACTION CREATED 201] ====================\n", flush=True)
+    logger.info(f"[SERVER TRANSACTION 201] id={new_tx.id} user={current_user.username} amount={new_tx.amount} merchant={new_tx.merchant}")
     return new_tx
 
 # Categories
@@ -140,27 +159,71 @@ def create_feedback(
     return new_fb
 
 # SMS Imports
-@router.post("/sms/import", response_model=SMSImportResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/sms/import", status_code=status.HTTP_201_CREATED)
 def import_sms(
-    sms_in: SMSImportCreate,
+    payload: Union[SmsBatchImportRequest, SMSImportCreate],
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db)
 ):
-    existing = db.query(SMSImport).filter(SMSImport.sms_hash == sms_in.sms_hash).first()
-    if existing:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SMS already imported")
-        
-    new_import = SMSImport(
-        id=str(uuid4()),
-        user_id=current_user.id,
-        sms_hash=sms_in.sms_hash,
-        sender=sms_in.sender,
-        timestamp=sms_in.timestamp
-    )
-    db.add(new_import)
-    db.commit()
-    db.refresh(new_import)
-    return new_import
+    print(f"\n==================== [SERVER RECEIVED SMS IMPORT] ====================", flush=True)
+    print(f"[AUTH] User: id={current_user.id}, username='{current_user.username}'", flush=True)
+
+    if isinstance(payload, SmsBatchImportRequest):
+        total_items = len(payload.sms_list)
+        imported_count = 0
+        skipped_count = 0
+        print(f"[CLIENT PAYLOAD] Received batch SMS import with {total_items} items", flush=True)
+
+        for item in payload.sms_list:
+            sms_hash = item.sms_hash or str(uuid4())
+            existing = db.query(SMSImport).filter(SMSImport.sms_hash == sms_hash).first()
+            if existing:
+                skipped_count += 1
+                print(f"[BATCH SKIP] SMS already imported (hash={sms_hash[:8]}...)", flush=True)
+                continue
+
+            new_import = SMSImport(
+                id=str(uuid4()),
+                user_id=current_user.id,
+                sms_hash=sms_hash,
+                sender=item.sender,
+                timestamp=item.timestamp
+            )
+            db.add(new_import)
+            imported_count += 1
+
+        db.commit()
+        print(f"[SERVER COMPARATIVE STATS] Total received: {total_items} | Newly saved: {imported_count} | Skipped/Duplicate: {skipped_count}", flush=True)
+        print(f"==================== [SERVER SMS BATCH IMPORT COMPLETED] ====================\n", flush=True)
+        return {"imported_count": imported_count, "skipped_count": skipped_count}
+    else:
+        # Single SMS import
+        print(f"[CLIENT PAYLOAD] Single SMS import from sender='{payload.sender}', hash='{payload.sms_hash}', timestamp={payload.timestamp}", flush=True)
+        existing = db.query(SMSImport).filter(SMSImport.sms_hash == payload.sms_hash).first()
+        if existing:
+            print(f"[SERVER NOTICE] SMS already imported: hash='{payload.sms_hash}'", flush=True)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SMS already imported")
+            
+        new_import = SMSImport(
+            id=str(uuid4()),
+            user_id=current_user.id,
+            sms_hash=payload.sms_hash,
+            sender=payload.sender,
+            timestamp=payload.timestamp
+        )
+        db.add(new_import)
+        db.commit()
+        db.refresh(new_import)
+        print(f"[SERVER PERSISTED] SMS import id='{new_import.id}', sender='{new_import.sender}'", flush=True)
+        print(f"==================== [SERVER SINGLE SMS IMPORT 201] ====================\n", flush=True)
+        return {
+            "id": new_import.id,
+            "user_id": new_import.user_id,
+            "sms_hash": new_import.sms_hash,
+            "sender": new_import.sender,
+            "timestamp": new_import.timestamp,
+            "created_at": new_import.created_at
+        }
 
 # Insights
 @router.get("/insights", response_model=List[InsightResponse])
